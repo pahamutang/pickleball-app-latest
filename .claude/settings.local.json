@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//mnt/c/Users/Daven/OneDrive/Desktop/pickleball-app-expo/**)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

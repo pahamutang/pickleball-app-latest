@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Mt Pickle Park",
+    "slug": "mt-pickle",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "pickleballapp",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "icon": "./assets/mt_pickle_logo.jpg",
+    "android": {
+      "package": "com.mtpicklepark.pickleballapp",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/mt_pickle_logo.jpg",
+        "backgroundColor": "#0B301F"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.mtpicklepark.pickleballapp"
+    },
+    "plugins": [
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8f03ff07-3479-4857-addf-03de4ac8c8d0"
+      }
+    }
+  }
+}
