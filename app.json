@@ -20,12 +20,13 @@
     "ios": {
       "bundleIdentifier": "com.mtpicklepark.pickleballapp"
     },
+    "owner": "daven2002",
     "plugins": [
       "expo-asset"
     ],
     "extra": {
       "eas": {
-        "projectId": "8f03ff07-3479-4857-addf-03de4ac8c8d0"
+        "projectId": "3f08f500-8483-4eec-a258-105ad3dd1d41"
       }
     }
   }
