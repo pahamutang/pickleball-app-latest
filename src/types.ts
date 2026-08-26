@@ -44,14 +44,23 @@ export function amountDue(player: Player): number {
   return grandTotal(player) - amountPaid(player);
 }
 
-// True only if the court fee AND every single order is paid.
+// True only if the court fee AND every single order is paid. A ₱0 court
+// fee (e.g. a free/comped session) counts as settled on its own — there's
+// nothing to collect for it, so nobody ever has a reason to tap its PAID
+// chip, and requiring that flag anyway would show "Partially Paid" for a
+// player who genuinely owes nothing.
 export function isFullyPaid(player: Player): boolean {
-  return player.courtFeePaid && player.orders.every((o) => o.isPaid);
+  const courtFeeSettled = player.courtFee === 0 || player.courtFeePaid;
+  return courtFeeSettled && player.orders.every((o) => o.isPaid);
 }
 
-// True if nothing at all has been paid yet.
+// True if nothing at all has been paid yet. A ₱0 court fee is compatible
+// with this too (it's moot — neither paid nor unpaid in any way that
+// matters) so it doesn't block "fully unpaid" from being true just
+// because its flag happens to read false.
 export function isFullyUnpaid(player: Player): boolean {
-  return !player.courtFeePaid && player.orders.every((o) => !o.isPaid);
+  const courtFeeUnpaid = player.courtFee === 0 || !player.courtFeePaid;
+  return courtFeeUnpaid && player.orders.every((o) => !o.isPaid);
 }
 
 export function paymentStatus(player: Player): PaymentStatus {
