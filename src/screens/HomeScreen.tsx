@@ -88,21 +88,53 @@ export default function HomeScreen({
     const { playerId, order: previousOrder } = editOrder;
     const player = players.find((p) => p.id === playerId);
 
+    // If this order was already marked paid, but the edit changes what's
+    // actually owed (price and/or quantity), whatever was collected before
+    // no longer covers the new total. Flip it back to unpaid instead of
+    // silently keeping it marked paid — otherwise bumping a ₱5 paid item up
+    // to ₱10 would report the full ₱10 as collected even though only ₱5
+    // ever actually changed hands. A pure rename/typo fix (amount
+    // unchanged) still keeps its paid status as-is.
+    const amountChanged = orderTotal(updated) !== orderTotal(previousOrder);
+    const staysPaid = previousOrder.isPaid && !amountChanged;
+    const finalOrder: OrderItem = { ...updated, isPaid: staysPaid };
+
     updatePlayer(playerId, (p) => ({
       ...p,
-      orders: p.orders.map((o) => (o.id === updated.id ? updated : o)),
+      orders: p.orders.map((o) => (o.id === updated.id ? finalOrder : o)),
     }));
 
-    // If this order was already marked paid, keep its line in the payment
-    // log in sync with the edit — otherwise the log would keep showing the
-    // old name/price even though the actual order changed.
     if (player && previousOrder.isPaid) {
-      renamePlayerItem(playerId, `${previousOrder.name} x${previousOrder.quantity}`, {
-        key: `${updated.name} x${updated.quantity}`,
-        description: `${player.name} — ${updated.name} x${updated.quantity}`,
-        amount: orderTotal(updated),
-        method: 'Cash',
-      });
+      const updatedPlayer: Player = {
+        ...player,
+        orders: player.orders.map((o) => (o.id === updated.id ? finalOrder : o)),
+      };
+
+      if (staysPaid) {
+        // Same amount, only the name changed — keep the log's line in
+        // sync with the edit.
+        renamePlayerItem(playerId, `${previousOrder.name} x${previousOrder.quantity}`, {
+          key: `${updated.name} x${updated.quantity}`,
+          description: `${player.name} — ${updated.name} x${updated.quantity}`,
+          amount: orderTotal(updated),
+          method: 'Cash',
+        });
+      } else {
+        // The amount changed — remove the now-stale "paid" line from the
+        // log. The order goes back to showing as due for its new total,
+        // same as any other unpaid order, until it's actually collected.
+        setPlayerItemPaid(
+          playerId,
+          {
+            key: `${previousOrder.name} x${previousOrder.quantity}`,
+            description: `${player.name} — ${previousOrder.name} x${previousOrder.quantity}`,
+            amount: orderTotal(previousOrder),
+            method: 'Cash',
+          },
+          false,
+          amountDue(updatedPlayer)
+        );
+      }
     }
 
     setEditOrder(null);
