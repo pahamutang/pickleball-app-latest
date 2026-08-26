@@ -1,7 +1,45 @@
-# Mt Pickle Park — Session Tracker (Expo)
+# Pickleball Court Reservation and Payment Management System for Mt. Pickle Park
 
-Tracks players, court fee, food/drink orders, per-item paid/unpaid status,
-and emails a full receipt when you finish a session.
+An Expo/React Native app with two parts:
+
+- **Court Reservation** (`src/screens/BookingScreen.tsx`) — the screen the
+  app opens to. Lets staff pick a court, a date, and one or more hourly
+  time slots, record who booked it and how many players, and mark the
+  reservation paid/unpaid. Double-booked slots are automatically disabled.
+- **Session Tracker** (the original app — `src/screens/HomeScreen.tsx` and
+  friends) — tracks players, court fee, food/drink orders, per-item
+  paid/unpaid status, and emails a full receipt when a session finishes.
+
+A button in each screen's top bar ("💳 Payment Tracker" on the Reservation
+screen, "📅" on the Session Tracker) switches between the two.
+
+## Owner vs. player accounts (Supabase)
+
+The app now requires an account (email + password) and syncs live through
+Supabase instead of storing everything only on one phone. There are two
+roles:
+
+- **Owner** — full access: booking, the session tracker, adding players,
+  logging orders, marking things paid. Becomes the owner by entering the
+  secret PIN (set in `supabase_migration.sql`) at sign-up.
+- **Player** — read-only. After signing up, they add themselves to the
+  session with just their name (`JoinSessionScreen.tsx`) — no code, no
+  owner involvement. From then on they see their own orders and bill
+  update live, but can't mark anything paid or see anyone else's data —
+  enforced by Postgres Row Level Security, not just hidden in the UI.
+
+Setup:
+1. Create a free Supabase project.
+2. Run `supabase_migration.sql` in the SQL Editor (edit the owner PIN near
+   the top first).
+3. Copy the Project URL + "Publishable"/anon key into `.env` (see
+   `.env` in this repo for the expected variable names).
+4. `npm install` to pull in `@supabase/supabase-js` and
+   `react-native-url-polyfill`.
+
+Data no longer lives only in `AsyncStorage` — `players`, `order_items`,
+and `payments` are synced from Supabase in real time. `reservations`
+(the Court Reservation module) is still local-only/owner-side for now.
 
 ## Email sending (no sign-in)
 
@@ -21,20 +59,24 @@ refresh, works fine in plain Expo Go.
 
 ```
 pickleball-app/
-  App.tsx                        entry point, screen switcher
+  App.tsx                        entry point, top-level tab switcher
   app.json                       Expo config (name, package id)
   eas.json                       EAS Build config (for the APK)
+  .github/workflows/eas-build.yml  triggers a cloud APK build on push (see below)
   assets/
     mt_pickle_logo.jpg           placeholder — swap with your real logo
   src/
     colors.ts                    brand palette
-    types.ts                     Player / OrderItem + derived getters
+    types.ts                     Player / OrderItem + derived getters (session tracker)
+    bookingTypes.ts               Reservation type + court/date/time-slot helpers (booking)
     context/PaymentLogContext.tsx
+    context/BookingContext.tsx    AsyncStorage-persisted reservations list
     services/emailService.ts     builds + sends the receipt via the backend
     services/settingsService.ts  AsyncStorage for session title/owner email
     utils/currency.ts            ₱ formatting, date formatting
     components/                  PlayerCard, PaidChip, and the 3 modals
-    screens/HomeScreen.tsx
+    screens/BookingScreen.tsx     NEW — Court Reservation (app's landing screen)
+    screens/HomeScreen.tsx        Session Tracker (original app)
     screens/SettingsScreen.tsx
     screens/PaymentHistoryScreen.tsx
 ```
@@ -84,13 +126,37 @@ const BACKEND_URL = 'https://your-backend-url';
 const BACKEND_API_KEY = 'same value as APP_API_KEY in the backend .env';
 ```
 
-## 4. Build the APK
+## 4. Build the APK — on GitHub, not locally
 
+This repo includes `.github/workflows/eas-build.yml`, which triggers a
+cloud build on Expo's EAS servers straight from GitHub — no `expo start`,
+no Expo Go, and no waiting on your own machine.
+
+**One-time setup:**
+1. Push this repo to GitHub (if you haven't already).
+2. Create a free account at [expo.dev](https://expo.dev) if you don't have
+   one, then generate an access token under
+   **Account Settings → Access Tokens**.
+3. In the GitHub repo: **Settings → Secrets and variables → Actions →
+   New repository secret**. Name it `EXPO_TOKEN`, paste the token as the
+   value.
+4. If this is the first time *your* Expo account is building this project,
+   run `npx eas init` once from your machine to link `app.json`'s
+   `extra.eas.projectId` to your own account (only needed once, not for
+   every build).
+
+**After that**, every push to `main`/`master` kicks off a build
+automatically. You can also trigger one manually from the **Actions** tab
+→ **Build Android APK** → **Run workflow**. When it finishes, the
+downloadable APK link shows up on your
+[expo.dev](https://expo.dev) dashboard under the project's **Builds** tab.
+
+Builds run on Expo's servers (typically a few minutes), so you can close
+your laptop and check back later — nothing runs on your own device.
+
+If you ever do need a local build instead:
 ```
-npm install -g eas-cli
-eas login
-eas build:configure
-eas build -p android --profile preview
+npx eas-cli build -p android --profile preview
 ```
 
 ## Notes

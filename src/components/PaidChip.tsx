@@ -1,16 +1,24 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AppColors } from '../colors';
 
-export default function PaidChip({ paid, onPress }: { paid: boolean; onPress: () => void }) {
+// When `onPress` is omitted the chip renders as a plain read-only badge —
+// used for players, who can see paid/unpaid status but can't toggle it
+// themselves (only the owner can mark something paid).
+export default function PaidChip({ paid, onPress }: { paid: boolean; onPress?: () => void }) {
+  const chipStyle = [
+    styles.chip,
+    { backgroundColor: paid ? AppColors.paidColor : AppColors.unpaidColor },
+  ];
+  if (!onPress) {
+    return (
+      <View style={chipStyle}>
+        <Text style={styles.text}>{paid ? 'PAID' : 'UNPAID'}</Text>
+      </View>
+    );
+  }
   return (
-    <Pressable
-      onPress={onPress}
-      style={[
-        styles.chip,
-        { backgroundColor: paid ? AppColors.paidColor : AppColors.unpaidColor },
-      ]}
-    >
+    <Pressable onPress={onPress} style={chipStyle}>
       <Text style={styles.text}>{paid ? 'PAID' : 'UNPAID'}</Text>
     </Pressable>
   );

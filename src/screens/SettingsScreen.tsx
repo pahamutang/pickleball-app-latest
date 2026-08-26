@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import { AppColors } from '../colors';
 import { loadSettings, saveSettings } from '../services/settingsService';
+import { useAuth } from '../context/AuthContext';
 
 export default function SettingsScreen({ onDone }: { onDone: () => void }) {
+  const { signOut, profile } = useAuth();
   const [sessionTitle, setSessionTitle] = useState('');
   const [ownerEmail, setOwnerEmail] = useState('');
   const [loading, setLoading] = useState(true);
@@ -78,6 +80,14 @@ export default function SettingsScreen({ onDone }: { onDone: () => void }) {
         <Pressable onPress={handleSave} style={styles.saveBtn}>
           <Text style={styles.saveBtnText}>Save Settings</Text>
         </Pressable>
+
+        <View style={styles.accountBox}>
+          <Text style={styles.accountLabel}>Signed in as owner</Text>
+          <Text style={styles.accountName}>{profile?.display_name || 'Owner'}</Text>
+          <Pressable onPress={signOut} style={styles.ownerSignOutBtn}>
+            <Text style={styles.ownerSignOutText}>Sign out</Text>
+          </Pressable>
+        </View>
       </ScrollView>
     </View>
   );
@@ -140,4 +150,15 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   saveBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
+  accountBox: {
+    marginTop: 32,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#e5e5e5',
+    alignItems: 'center',
+  },
+  accountLabel: { fontSize: 12, color: '#888' },
+  accountName: { fontSize: 15, fontWeight: '600', color: '#1a1a1a', marginTop: 2 },
+  ownerSignOutBtn: { marginTop: 12 },
+  ownerSignOutText: { color: AppColors.crimsonRed, fontWeight: '600', fontSize: 14 },
 });

@@ -1,4 +1,5 @@
-import { Payment, PaymentStatus, PaymentLineItem } from '../payment';
+import { Payment, PaymentStatus, PaymentLineItem } from './payment';
+import { generateId } from './types';
 
 export type NewPayment = {
   description: string;
@@ -20,8 +21,10 @@ export type ItemPaidUpdate = {
   method: string;
 };
 
+// A real UUID — matches the `uuid` primary key column in Supabase's
+// `payments` table, so a row generated on-device inserts cleanly.
 function makeId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return generateId();
 }
 
 // Both look like "PlayerName — thing". Split off the player-name prefix so
@@ -71,6 +74,16 @@ export function applyAddPayment(
 // e.g. collecting the remaining orders and coming up short would overwrite
 // the row with only the orders' items, losing the court-fee line and
 // making the row's total look wrong relative to what was really collected.
+//
+// The row's `amount`, though, must NOT be recomputed by summing the merged
+// items' prices. `items[].amount` is each item's FULL price (used for the
+// history breakdown, e.g. "Coke x2 — ₱40") — not what was actually handed
+// over for it. For a short/partial payment those two numbers differ (that's
+// the whole point of a partial payment), so summing items silently replaced
+// "cash actually collected" with "total still owed," which is what made a
+// ₱60 partial collection on a ₱140 tab log as ₱140. Instead: keep whatever
+// was already collected for items this call doesn't touch, and add exactly
+// what `payment.amount` says was collected this time.
 export function applySetPlayerPayment(
   payments: Payment[],
   playerId: string,
@@ -88,7 +101,16 @@ export function applySetPlayerPayment(
   const mergedMap = new Map(existingItems.map((li) => [li.description, li]));
   for (const li of newItems) mergedMap.set(li.description, li);
   const mergedItems = Array.from(mergedMap.values());
-  const mergedAmount = mergedItems.reduce((sum, li) => sum + li.amount, 0);
+
+  // Cash already collected for items this call isn't touching (e.g. a
+  // court fee settled earlier via the PAID chip) + whatever was actually
+  // received in THIS call. Never derived from the items' listed prices.
+  const newKeys = new Set(newItems.map((li) => li.description));
+  const untouchedExistingAmount = existingItems
+    .filter((li) => !newKeys.has(li.description))
+    .reduce((sum, li) => sum + li.amount, 0);
+  const mergedAmount = untouchedExistingAmount + payment.amount;
+
   const playerName = splitDescription(existing?.description ?? payment.description)[0];
   const description = describeItems(playerName, mergedItems);
 

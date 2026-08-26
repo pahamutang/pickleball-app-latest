@@ -7,7 +7,9 @@ import React, {
   useCallback,
   ReactNode,
 } from 'react';
+import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '../services/supabaseClient';
 import { Payment } from '../payment';
 import {
   NewPayment,
@@ -18,45 +20,19 @@ import {
   applyRenamePlayerItem,
 } from '../paymentLogReducer';
 
-const STORAGE_KEY = 'mt_pickle_payment_log';
+// Device-local only — just remembers when the 24h auto-clear window
+// started. The payments themselves now live in Supabase, shared live
+// across the owner's devices; this timer is just a local convenience.
 const RESET_ANCHOR_KEY = 'mt_pickle_payment_log_reset_at';
-
-// How often the log auto-clears itself.
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// While the app stays open, check periodically whether the 24h window has
-// elapsed (in case someone leaves the app running across the boundary
-// instead of closing/reopening it).
 const CHECK_INTERVAL_MS = 60 * 1000; // 1 minute
 
 interface PaymentLogContextValue {
   payments: Payment[];
-  // Legacy, standalone entry not tied to a player (e.g. a misc log line).
-  // Nothing in the app currently calls this — kept around in case another
-  // screen needs to log something that isn't per-player — but if you don't
-  // have a use for it, it's safe to delete along with this comment.
   addPayment: (payment: NewPayment) => void;
-  // Cash-register style ("Collect Payment" calculator): REPLACES whatever
-  // is currently logged for this player — paid, pending, or failed — with
-  // the freshly computed totals, rather than stacking a new row every time
-  // you touch their payment. The row only gets a date bump and moves back
-  // to the top of the list; it keeps its identity (and stays editable)
-  // until it's explicitly removed.
   setPlayerPayment: (playerId: string, payment: NewPayment) => void;
-  // Single-item toggle style (tapping the PAID chip on court fee or one
-  // order). Idempotent in both directions: marking an item paid that's
-  // already logged is a no-op (no duplicate line/amount), and un-marking
-  // it actually removes that item's line and amount from the row — so
-  // toggling something on/off/on again never inflates the total or the
-  // item breakdown.
   setPlayerItemPaid: (playerId: string, item: ItemPaidUpdate, paid: boolean, remainingDue: number) => void;
-  // Renames/re-prices a single already-logged item in place — used when an
-  // order that's already been marked paid gets edited (pencil icon), so
-  // the log doesn't go stale relative to the actual order.
   renamePlayerItem: (playerId: string, oldKey: string, updated: ItemPaidUpdate) => void;
-  // The explicit ✕ in Payment History. This is the ONLY way a player's
-  // current row goes away — after this, their next payment starts a brand
-  // new row again.
   removePayment: (id: string) => void;
   clearHistory: () => void;
   loading: boolean;
@@ -64,17 +40,53 @@ interface PaymentLogContextValue {
 
 const PaymentLogContext = createContext<PaymentLogContextValue | undefined>(undefined);
 
+type PaymentRow = {
+  id: string;
+  player_id: string | null;
+  description: string;
+  amount: number;
+  method: string;
+  status: Payment['status'];
+  date: string;
+  items: Payment['items'];
+};
+
+function rowToPayment(row: PaymentRow): Payment {
+  return {
+    id: row.id,
+    playerId: row.player_id ?? undefined,
+    description: row.description,
+    amount: Number(row.amount),
+    method: row.method,
+    status: row.status,
+    date: row.date,
+    items: row.items ?? undefined,
+  };
+}
+
 export function PaymentLogProvider({ children }: { children: ReactNode }) {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
-  // When the current 24h window started. Read from storage on load; falls
-  // back to "now" the very first time the app ever runs.
   const resetAnchorRef = useRef<number>(Date.now());
 
-  const persistPayments = useCallback((next: Payment[]) => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch((e) =>
-      console.warn('Failed to save payment history', e)
-    );
+  // Last known database state, to diff against so we only push what
+  // actually changed (same pattern as PlayersContext).
+  const lastSyncedRef = useRef<Payment[]>([]);
+  const applyingRemoteRef = useRef(false);
+
+  const fetchAll = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('payments')
+      .select('id, player_id, description, amount, method, status, date, items')
+      .order('date', { ascending: false });
+    if (error) {
+      console.warn('Failed to load payment history', error);
+      return;
+    }
+    const mapped = (data ?? []).map(rowToPayment) as Payment[];
+    applyingRemoteRef.current = true;
+    lastSyncedRef.current = mapped;
+    setPayments(mapped);
   }, []);
 
   const persistAnchor = useCallback((anchor: number) => {
@@ -84,53 +96,45 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Wipes the log and starts a fresh 24h window from right now.
+  // Wipes the log in Supabase and starts a fresh 24h window from now.
   const resetNow = useCallback(() => {
-    setPayments([]);
-    persistPayments([]);
+    (async () => {
+      await supabase.from('payments').delete().not('id', 'is', null);
+    })();
     persistAnchor(Date.now());
-  }, [persistPayments, persistAnchor]);
+  }, [persistAnchor]);
 
-  // Load saved history + reset anchor on app start, and auto-clear
-  // immediately if 24h have already passed since the last reset (e.g. the
-  // app was closed overnight).
   useEffect(() => {
     (async () => {
       try {
-        const [rawPayments, rawAnchor] = await Promise.all([
-          AsyncStorage.getItem(STORAGE_KEY),
-          AsyncStorage.getItem(RESET_ANCHOR_KEY),
-        ]);
-
+        const rawAnchor = await AsyncStorage.getItem(RESET_ANCHOR_KEY);
         const anchor = rawAnchor ? parseInt(rawAnchor, 10) : Date.now();
         const elapsed = Date.now() - anchor;
 
         if (elapsed >= RESET_INTERVAL_MS) {
-          // Window expired while the app was closed — start clean.
-          setPayments([]);
-          persistAnchor(Date.now());
-          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([]));
+          resetNow();
         } else {
           resetAnchorRef.current = anchor;
           if (!rawAnchor) await AsyncStorage.setItem(RESET_ANCHOR_KEY, String(anchor));
-          if (rawPayments) setPayments(JSON.parse(rawPayments));
         }
       } catch (e) {
-        console.warn('Failed to load payment history', e);
-      } finally {
-        setLoading(false);
+        console.warn('Failed to load payment log reset anchor', e);
       }
+      await fetchAll();
+      setLoading(false);
     })();
-  }, [persistAnchor]);
 
-  // Persist on every change (after initial load).
-  useEffect(() => {
-    if (loading) return;
-    persistPayments(payments);
-  }, [payments, loading, persistPayments]);
+    const channel = supabase
+      .channel('payments-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, fetchAll)
+      .subscribe();
 
-  // While the app is open, poll for the 24h window elapsing so the log
-  // clears itself without needing an app restart.
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (loading) return;
     const interval = setInterval(() => {
@@ -141,6 +145,97 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
     }, CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loading, resetNow]);
+
+  // Diff `payments` against the database and push only what changed.
+  useEffect(() => {
+    if (loading) return;
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+      return;
+    }
+
+    (async () => {
+      const prev = lastSyncedRef.current;
+      const prevById = new Map(prev.map((p) => [p.id, p]));
+      const nextById = new Map(payments.map((p) => [p.id, p]));
+
+      // Track whether every write this pass actually landed in Supabase.
+      // Previously these awaits were fire-and-forget: if a write failed
+      // (e.g. the `payments` table/columns not matching what the app
+      // sends — like a `status` check constraint that doesn't know about
+      // 'pending' yet), the error was silently dropped, but
+      // `lastSyncedRef.current` still got set to the optimistic local
+      // state below as if it HAD been saved. Then the next unrelated
+      // realtime event (or reset) would fetchAll() and quietly overwrite
+      // the screen with the database's real (un-updated) rows — which is
+      // exactly what made "Log as Pending" look like it silently reverted:
+      // the local state showed 'pending' for a moment, then vanished with
+      // no error ever surfaced.
+      let hadError = false;
+      const failures: string[] = [];
+
+      for (const p of prev) {
+        if (!nextById.has(p.id)) {
+          const { error } = await supabase.from('payments').delete().eq('id', p.id);
+          if (error) {
+            hadError = true;
+            failures.push(error.message);
+            console.warn('Failed to delete payment', p.id, error);
+          }
+        }
+      }
+
+      for (const p of payments) {
+        const before = prevById.get(p.id);
+        const row = {
+          id: p.id,
+          player_id: p.playerId ?? null,
+          description: p.description,
+          amount: p.amount,
+          method: p.method,
+          status: p.status,
+          date: p.date,
+          items: p.items ?? null,
+        };
+        if (!before) {
+          const { error } = await supabase.from('payments').insert(row);
+          if (error) {
+            hadError = true;
+            failures.push(error.message);
+            console.warn('Failed to save payment', p.id, error);
+          }
+        } else if (JSON.stringify(before) !== JSON.stringify(p)) {
+          const { error } = await supabase.from('payments').update(row).eq('id', p.id);
+          if (error) {
+            hadError = true;
+            failures.push(error.message);
+            console.warn('Failed to update payment', p.id, error);
+          }
+        }
+      }
+
+      if (hadError) {
+        // Don't pretend the optimistic state is now the source of truth —
+        // pull the real rows back from the database so the UI reflects
+        // what's actually saved instead of silently drifting.
+        const message = failures[0] ?? 'Unknown error';
+        const isSchemaIssue =
+          /schema cache|does not exist|violates check constraint|column .* of relation/i.test(
+            message
+          );
+        Alert.alert(
+          "Couldn't save payment",
+          isSchemaIssue
+            ? 'The payments table in Supabase is missing or out of date (e.g. it doesn\'t allow a "pending" status yet). Run supabase_fix_migration.sql in the Supabase SQL editor, then try again.'
+            : `${message}\n\nYour change may not have been saved — please try again.`
+        );
+        await fetchAll(); // fetchAll already marks this as a remote read, not a local edit to push back
+        return;
+      }
+
+      lastSyncedRef.current = payments;
+    })();
+  }, [payments, loading, fetchAll]);
 
   const addPayment = useCallback((payment: NewPayment) => {
     setPayments((prev) => applyAddPayment(prev, payment));
@@ -161,16 +256,13 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
     setPayments((prev) => applyRenamePlayerItem(prev, playerId, oldKey, updated));
   }, []);
 
-  // The ✕ in Payment History. This is the only thing that frees a player
-  // up to get a brand new row on their next payment.
   const removePayment = useCallback((id: string) => {
     setPayments((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
-  // Manual clear (e.g. a "Clear History" button) also restarts the 24h
-  // window from now, so it doesn't auto-clear again a moment later.
   const clearHistory = useCallback(() => {
     resetNow();
+    setPayments([]);
   }, [resetNow]);
 
   return (

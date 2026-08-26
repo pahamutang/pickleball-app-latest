@@ -1,0 +1,52 @@
+name: Build Android APK
+
+# Builds happen on Expo's EAS servers, not on the GitHub runner — this
+# workflow just triggers the build and waits for the result. That's what
+# replaces running `eas build` (or Expo Go) from your own machine.
+#
+# One-time setup before this will work:
+#   1. Create a free account at https://expo.dev (if you don't have one).
+#   2. Generate an access token: https://expo.dev/accounts/[your-account]/settings/access-tokens
+#   3. In this GitHub repo: Settings -> Secrets and variables -> Actions ->
+#      New repository secret. Name: EXPO_TOKEN, value: the token from step 2.
+#   4. Push to main/master, or run this workflow manually from the Actions
+#      tab ("Run workflow"). When it finishes, the build/APK link is printed
+#      in the job summary and also shows up on https://expo.dev under your
+#      project's Builds tab.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch: {}
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build APK on EAS (preview profile)
+        run: eas build --platform android --profile preview --non-interactive --wait
+
+      - name: Print build summary
+        if: always()
+        run: |
+          echo "### Android build" >> "$GITHUB_STEP_SUMMARY"
+          echo "Check https://expo.dev for the build status and APK download link." >> "$GITHUB_STEP_SUMMARY"

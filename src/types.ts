@@ -60,6 +60,12 @@ export function paymentStatus(player: Player): PaymentStatus {
   return 'Partially Paid';
 }
 
+// UUID v4 — matches the `uuid` primary key columns in Supabase, so IDs
+// generated on-device can be inserted directly as real row IDs.
 export function generateId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }

@@ -25,10 +25,12 @@ import PaymentCalculatorModal from '../components/PaymentCalculatorModal';
 
 export default function HomeScreen({
   onOpenSettings,
-  onOpenHistory
+  onOpenHistory,
+  onOpenBooking,
 }: {
   onOpenSettings: () => void;
   onOpenHistory: () => void;
+  onOpenBooking: () => void;
 }) {
   const { setPlayerPayment, setPlayerItemPaid, renamePlayerItem, payments, loading: paymentLogLoading } = usePaymentLog();
   // Players now live in a persisted context (mirrors PaymentLogContext) so
@@ -421,6 +423,15 @@ export default function HomeScreen({
     <View style={styles.screen}>
       <View style={styles.appBar}>
         <View style={styles.appBarLeft}>
+          <Pressable
+            onPress={onOpenBooking}
+            hitSlop={15}
+            style={styles.historyButton}
+            accessibilityLabel="Court reservations"
+            accessibilityRole="button"
+          >
+            <Text style={styles.historyButtonText}>📅</Text>
+          </Pressable>
           <Pressable
             onPress={onOpenHistory}
             hitSlop={15}
