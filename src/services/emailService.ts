@@ -184,15 +184,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
  * for devices without Gmail installed.
  */
 export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendResult> {
-  console.log('📧 sendReceiptEmail called with:', {
-    sessionTitle: receipt.sessionTitle,
-    ownerEmail: receipt.ownerEmail,
-    total: receipt.total
-  });
-
   const message = buildReceiptText(receipt);
   const subject = `Mt Pickle Park Receipt — ${receipt.sessionTitle}`;
-  console.log('📧 Message built, length:', message.length);
 
   if (Platform.OS === 'android') {
     try {
@@ -202,7 +195,6 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
         `&body=${encodeURIComponent(message)}`;
 
       const canOpenGmail = await Linking.canOpenURL(gmailUrl);
-      console.log('📧 canOpenURL(googlegmail://):', canOpenGmail);
 
       if (canOpenGmail) {
         await Linking.openURL(gmailUrl);
@@ -215,7 +207,6 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
         `&body=${encodeURIComponent(message)}`;
 
       const canOpenMailto = await Linking.canOpenURL(mailtoUrl);
-      console.log('📧 canOpenURL(mailto:):', canOpenMailto);
 
       if (!canOpenMailto) {
         throw new Error(
@@ -233,7 +224,6 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
 
   try {
     const isAvailable = await MailComposer.isAvailableAsync();
-    console.log('📧 MailComposer.isAvailableAsync():', isAvailable);
 
     if (!isAvailable) {
       throw new Error(
@@ -250,8 +240,6 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
       20000,
       'The mail app took too long to respond. It may have opened in the background — check for it, then return here.'
     );
-
-    console.log('📧 MailComposer result:', result);
 
     if (result.status === 'cancelled') {
       throw new Error('Email was cancelled.');
