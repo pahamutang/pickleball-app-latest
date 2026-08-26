@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { AppColors } from '../colors';
-import { OrderItem, Player, amountDue, amountPaid, grandTotal, isFullyPaid, orderTotal } from '../types';
+import { OrderItem, Player, amountDue, amountPaid, generateId, grandTotal, isFullyPaid, orderTotal } from '../types';
 import { formatCurrency } from '../utils/currency';
 import { loadSettings } from '../services/settingsService';
 import { sendReceiptEmail } from '../services/emailService';
@@ -83,59 +83,108 @@ export default function HomeScreen({
 
   // Edits an existing order's name/price/quantity in place (used by the
   // pencil button on each order row) rather than deleting and re-adding it.
+  //
+  // The tricky part is when the order was already marked PAID and the edit
+  // changes the total. isPaid is all-or-nothing per order — there's no
+  // "half paid" state — so a naive in-place edit would either (a) silently
+  // report the new, higher total as fully collected when only the old
+  // amount ever changed hands, or (b) un-pay the whole thing and lose the
+  // fact that part of it genuinely WAS collected already. Neither is
+  // honest. Instead:
+  //  - Same total (pure rename/typo fix): edit in place, stays paid.
+  //  - Increased total: the original paid order is left completely
+  //    untouched (still paid, at its original price/qty — that money was
+  //    real). Only the DIFFERENCE becomes a new, separate unpaid order
+  //    line, so just the new amount shows as due — not the full new total
+  //    from scratch.
+  //  - Decreased total: the amount already collected now exceeds the new
+  //    total — an overpayment/refund, which needs a human to actually
+  //    resolve (hand back cash, apply credit, etc.), not something this
+  //    app can safely auto-resolve. Flip it back to unpaid so it's visibly
+  //    flagged rather than silently mismatched, and tell the person why.
   const handleEditOrder = (updated: OrderItem) => {
     if (!editOrder) return;
     const { playerId, order: previousOrder } = editOrder;
     const player = players.find((p) => p.id === playerId);
+    if (!player) {
+      setEditOrder(null);
+      return;
+    }
 
-    // If this order was already marked paid, but the edit changes what's
-    // actually owed (price and/or quantity), whatever was collected before
-    // no longer covers the new total. Flip it back to unpaid instead of
-    // silently keeping it marked paid — otherwise bumping a ₱5 paid item up
-    // to ₱10 would report the full ₱10 as collected even though only ₱5
-    // ever actually changed hands. A pure rename/typo fix (amount
-    // unchanged) still keeps its paid status as-is.
-    const amountChanged = orderTotal(updated) !== orderTotal(previousOrder);
-    const staysPaid = previousOrder.isPaid && !amountChanged;
-    const finalOrder: OrderItem = { ...updated, isPaid: staysPaid };
+    const oldTotal = orderTotal(previousOrder);
+    const newTotal = orderTotal(updated);
+    const wasPaid = previousOrder.isPaid;
 
-    updatePlayer(playerId, (p) => ({
-      ...p,
-      orders: p.orders.map((o) => (o.id === updated.id ? finalOrder : o)),
-    }));
-
-    if (player && previousOrder.isPaid) {
-      const updatedPlayer: Player = {
-        ...player,
-        orders: player.orders.map((o) => (o.id === updated.id ? finalOrder : o)),
-      };
-
-      if (staysPaid) {
-        // Same amount, only the name changed — keep the log's line in
-        // sync with the edit.
+    // Not paid yet, or a same-total rename — edit in place, same as before.
+    if (!wasPaid || newTotal === oldTotal) {
+      updatePlayer(playerId, (p) => ({
+        ...p,
+        orders: p.orders.map((o) => (o.id === updated.id ? updated : o)),
+      }));
+      if (wasPaid) {
         renamePlayerItem(playerId, `${previousOrder.name} x${previousOrder.quantity}`, {
           key: `${updated.name} x${updated.quantity}`,
           description: `${player.name} — ${updated.name} x${updated.quantity}`,
-          amount: orderTotal(updated),
+          amount: newTotal,
           method: 'Cash',
         });
-      } else {
-        // The amount changed — remove the now-stale "paid" line from the
-        // log. The order goes back to showing as due for its new total,
-        // same as any other unpaid order, until it's actually collected.
-        setPlayerItemPaid(
-          playerId,
-          {
-            key: `${previousOrder.name} x${previousOrder.quantity}`,
-            description: `${player.name} — ${previousOrder.name} x${previousOrder.quantity}`,
-            amount: orderTotal(previousOrder),
-            method: 'Cash',
-          },
-          false,
-          amountDue(updatedPlayer)
-        );
       }
+      setEditOrder(null);
+      return;
     }
+
+    if (newTotal > oldTotal) {
+      // Leave the original paid order exactly as it was — the ₱ already
+      // collected for it doesn't change. The increase becomes its own new
+      // unpaid line, which will get logged normally once it's actually
+      // collected (PAID chip or cash calculator), same as any other order.
+      const diff = newTotal - oldTotal;
+      const extraOrder: OrderItem = {
+        id: generateId(),
+        name: `${updated.name} (added)`,
+        price: diff,
+        quantity: 1,
+        isPaid: false,
+      };
+      updatePlayer(playerId, (p) => ({
+        ...p,
+        orders: [...p.orders, extraOrder],
+      }));
+      setEditOrder(null);
+      return;
+    }
+
+    // newTotal < oldTotal: the amount already collected now exceeds what's
+    // owed. Flip the order back to unpaid and drop the now-inaccurate paid
+    // line from the log, then flag it — this needs a manual refund/
+    // reconciliation, not a silent auto-fix.
+    const revertedOrder: OrderItem = { ...updated, isPaid: false };
+    const updatedPlayer: Player = {
+      ...player,
+      orders: player.orders.map((o) => (o.id === updated.id ? revertedOrder : o)),
+    };
+
+    updatePlayer(playerId, (p) => ({
+      ...p,
+      orders: p.orders.map((o) => (o.id === updated.id ? revertedOrder : o)),
+    }));
+
+    setPlayerItemPaid(
+      playerId,
+      {
+        key: `${previousOrder.name} x${previousOrder.quantity}`,
+        description: `${player.name} — ${previousOrder.name} x${previousOrder.quantity}`,
+        amount: oldTotal,
+        method: 'Cash',
+      },
+      false,
+      amountDue(updatedPlayer)
+    );
+
+    Alert.alert(
+      'Amount reduced on a paid item',
+      `₱${oldTotal.toFixed(2)} was already collected for this, more than the new ₱${newTotal.toFixed(2)} total. The ₱${(oldTotal - newTotal).toFixed(2)} difference needs to be refunded or reconciled manually — the item now shows as unpaid until that's sorted out.`
+    );
 
     setEditOrder(null);
   };
