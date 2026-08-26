@@ -1,52 +1,59 @@
-name: Build Android APK
+name: EAS Build (Android)
 
-# Builds happen on Expo's EAS servers, not on the GitHub runner — this
-# workflow just triggers the build and waits for the result. That's what
-# replaces running `eas build` (or Expo Go) from your own machine.
+# Manual-trigger APK build via EAS. NOT wired to push events on purpose —
+# every push auto-triggering a cloud build would burn through Expo's free
+# build queue/minutes fast, and an untested commit could ship a broken
+# APK without anyone noticing. Triggering by hand keeps you in control of
+# what actually gets built and when.
 #
-# One-time setup before this will work:
-#   1. Create a free account at https://expo.dev (if you don't have one).
-#   2. Generate an access token: https://expo.dev/accounts/[your-account]/settings/access-tokens
-#   3. In this GitHub repo: Settings -> Secrets and variables -> Actions ->
-#      New repository secret. Name: EXPO_TOKEN, value: the token from step 2.
-#   4. Push to main/master, or run this workflow manually from the Actions
-#      tab ("Run workflow"). When it finishes, the build/APK link is printed
-#      in the job summary and also shows up on https://expo.dev under your
-#      project's Builds tab.
+# Before it ever touches EAS, this workflow installs deps and runs your
+# Jest test suite. If tests fail, the build step never runs — so a
+# broken build can't silently go out.
 
 on:
-  push:
-    branches: [main, master]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "EAS build profile"
+        required: true
+        default: "preview"
+        type: choice
+        options:
+          - preview
+          - production
 
 jobs:
-  build-android:
+  test-and-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Set up EAS
+      - name: Run tests
+        run: npm test -- --ci
+
+      - name: Setup EAS CLI
         uses: expo/expo-github-action@v8
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
+          packager: npm
 
-      - name: Build APK on EAS (preview profile)
-        run: eas build --platform android --profile preview --non-interactive --wait
+      - name: Verify EAS auth
+        run: eas whoami
 
-      - name: Print build summary
+      - name: Build Android APK
+        run: eas build --platform android --profile ${{ inputs.profile }} --non-interactive --wait
+
+      - name: Show build result
         if: always()
-        run: |
-          echo "### Android build" >> "$GITHUB_STEP_SUMMARY"
-          echo "Check https://expo.dev for the build status and APK download link." >> "$GITHUB_STEP_SUMMARY"
+        run: eas build:list --platform android --limit 1 --non-interactive
