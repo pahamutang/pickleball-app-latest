@@ -122,15 +122,22 @@ function buildReceiptText(receipt: SessionReceipt): string {
   lines.push(row('GRAND TOTAL', formatCurrency(receipt.total)));
   lines.push(divider('='));
 
-  // Add payment history for this session
+  // Add payment history for this session. `receipt.payments` is already
+  // filtered down to "today" (local calendar date) by the caller
+  // (HomeScreen.finishSession) before it ever gets here — this used to
+  // re-filter with its OWN, different definition of "today"
+  // (`new Date(p.date).toDateString()`, local, vs. the caller's old
+  // UTC-based filter), and the two disagreeing boundaries could silently
+  // drop legitimately-"today" payments from the receipt depending on the
+  // time of day. Trusting the already-filtered list avoids re-introducing
+  // that mismatch — there's no second, independent notion of "today" to
+  // get out of sync with the caller's.
   if (receipt.payments && receipt.payments.length > 0) {
     lines.push('');
     lines.push(center('PAYMENT HISTORY (TODAY)'));
     lines.push(divider());
 
-    // Group payments by date (today)
-    const today = new Date().toDateString();
-    const todaysPayments = receipt.payments.filter(p => new Date(p.date).toDateString() === today);
+    const todaysPayments = receipt.payments;
 
     if (todaysPayments.length > 0) {
       for (const payment of todaysPayments) {
@@ -201,8 +208,13 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
         return 'undetermined';
       }
 
+      // Per RFC 6068 the address itself isn't percent-encoded (only the
+      // query params are) — encoding it turns "@" into "%40", and some
+      // Android mail apps' URI matchers only recognize a literal "@" here,
+      // so an encoded address can make canOpenURL/openURL silently fail to
+      // route to an installed mail app.
       const mailtoUrl =
-        `mailto:${encodeURIComponent(receipt.ownerEmail)}` +
+        `mailto:${receipt.ownerEmail}` +
         `?subject=${encodeURIComponent(subject)}` +
         `&body=${encodeURIComponent(message)}`;
 

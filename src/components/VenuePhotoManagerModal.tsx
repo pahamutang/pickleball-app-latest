@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
@@ -12,13 +12,18 @@ import {
 } from 'react-native';
 import { AppColors } from '../colors';
 import { useVenuePhotos, VenuePhoto } from '../context/VenuePhotosContext';
+import { buildVenueSlides, SLOT_COUNT, VenueSlide } from '../utils/venueSlides';
 import AlertModal from './AlertModal';
 
-// Owner-only screen for changing the venue photo carousel. Adding a photo
-// uploads it to Supabase Storage and inserts a row players' devices pick
-// up over realtime (see VenuePhotosContext) — removing one does the same
-// in reverse. There's nothing in here a player's account can reach: this
-// component is only ever mounted from BookingScreen when isOwner is true.
+// Owner-only screen for changing the venue photo carousel. There are
+// always 5 base slides (see utils/venueSlides.ts) — each one is either
+// still showing its bundled default photo, or has been overridden with a
+// custom photo the owner uploaded. Editing any one slide only ever
+// touches that slide's own row (targeted by its fixed position), so
+// replacing slide 1 or 2 can never affect any other slide. Extra photos
+// beyond the 5 base slides can also be added and removed outright.
+// There's nothing in here a player's account can reach: this component
+// is only ever mounted from BookingScreen when isOwner is true.
 export default function VenuePhotoManagerModal({
   visible,
   onClose,
@@ -26,19 +31,23 @@ export default function VenuePhotoManagerModal({
   visible: boolean;
   onClose: () => void;
 }) {
-  const { photos, uploading, addPhoto, removePhoto } = useVenuePhotos();
-  const [pendingDelete, setPendingDelete] = useState<VenuePhoto | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const { photos, uploading, savingSlot, addPhoto, removePhoto, setSlidePhoto } = useVenuePhotos();
+  const slides = useMemo(() => buildVenueSlides(photos), [photos]);
+  const [pendingRemove, setPendingRemove] = useState<VenuePhoto | null>(null);
+  const [removing, setRemoving] = useState(false);
   const [alert, setAlert] = useState<{ title: string; message: string } | null>(null);
 
-  const handlePickPhoto = async () => {
+  // Shared by every entry point that ends in picking a replacement image
+  // — "Add Photo" and editing any individual slide. Only what happens
+  // with the picked asset differs, so the picker + validation lives here.
+  const pickImage = async (): Promise<{ base64: string; uri: string } | null> => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       setAlert({
         title: 'Photo access needed',
         message: 'Allow photo library access in your device settings to add venue photos.',
       });
-      return;
+      return null;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -47,30 +56,54 @@ export default function VenuePhotoManagerModal({
       quality: 0.7,
       base64: true,
     });
-    if (result.canceled || !result.assets?.length) return;
+    if (result.canceled || !result.assets?.length) return null;
 
     const asset = result.assets[0];
     if (!asset.base64) {
       setAlert({ title: "Couldn't read photo", message: 'Please try a different photo.' });
-      return;
+      return null;
     }
 
-    const res = await addPhoto(asset.base64, asset.uri);
+    return { base64: asset.base64, uri: asset.uri };
+  };
+
+  const handlePickPhoto = async () => {
+    const picked = await pickImage();
+    if (!picked) return;
+
+    const res = await addPhoto(picked.base64, picked.uri);
     if (!res.ok) {
       setAlert({ title: "Couldn't add photo", message: res.error ?? 'Please try again.' });
     }
   };
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    const res = await removePhoto(pendingDelete);
-    setDeleting(false);
-    setPendingDelete(null);
+  // Sets the image for exactly this one slide — identified by its fixed
+  // position, e.g. slide 1 is always position 0. Every other slide's
+  // photo is left exactly as it was.
+  const handleEditSlide = async (slide: VenueSlide) => {
+    const picked = await pickImage();
+    if (!picked) return;
+
+    const position = slide.kind === 'extra' ? slide.photo.position : slide.slot;
+    const existing = slide.kind === 'default' ? null : slide.photo;
+    const res = await setSlidePhoto(position, existing, picked.base64, picked.uri);
+    if (!res.ok) {
+      setAlert({ title: "Couldn't set photo", message: res.error ?? 'Please try again.' });
+    }
+  };
+
+  const confirmRemove = async () => {
+    if (!pendingRemove) return;
+    setRemoving(true);
+    const res = await removePhoto(pendingRemove);
+    setRemoving(false);
+    setPendingRemove(null);
     if (!res.ok) {
       setAlert({ title: "Couldn't remove photo", message: res.error ?? 'Please try again.' });
     }
   };
+
+  const removeDialogIsRevert = pendingRemove != null && pendingRemove.position < SLOT_COUNT;
 
   return (
     <>
@@ -84,58 +117,94 @@ export default function VenuePhotoManagerModal({
           </View>
 
           <Text style={styles.helper}>
-            These photos show in the carousel at the top of the booking screen for everyone —
-            changes here update on players' phones automatically.
+            Tap ✎ on any slide to replace just that photo — every other slide stays as it is.
+            Changes update on players' phones automatically.
           </Text>
 
           <FlatList
-            data={photos}
-            keyExtractor={(p) => p.id}
+            data={slides}
+            keyExtractor={(slide, i) =>
+              slide.kind === 'default' ? `slot-${slide.slot}` : `${slide.kind}-${slide.photo.id}-${i}`
+            }
             numColumns={2}
             columnWrapperStyle={styles.row}
             contentContainerStyle={styles.grid}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No custom photos yet — the default court photos are showing.</Text>
-            }
-            renderItem={({ item }) => (
-              <View style={styles.thumbWrap}>
-                <Image source={{ uri: item.url }} style={styles.thumb} resizeMode="cover" />
-                <Pressable
-                  onPress={() => setPendingDelete(item)}
-                  style={styles.removeBtn}
-                  accessibilityRole="button"
-                  accessibilityLabel="Remove photo"
-                >
-                  <Text style={styles.removeBtnText}>✕</Text>
-                </Pressable>
-              </View>
-            )}
+            renderItem={({ item, index }) => {
+              const slotNumber = index + 1;
+              const position = item.kind === 'extra' ? item.photo.position : item.slot;
+              const isSaving = savingSlot === position;
+              const isCustom = item.kind !== 'default';
+
+              return (
+                <View style={styles.thumbWrap}>
+                  <Image source={item.source} style={styles.thumb} resizeMode="cover" />
+                  <View style={styles.slideLabel}>
+                    <Text style={styles.slideLabelText}>Slide {slotNumber}</Text>
+                  </View>
+                  {isSaving && (
+                    <View style={styles.savingOverlay}>
+                      <ActivityIndicator color="#fff" />
+                    </View>
+                  )}
+                  <Pressable
+                    onPress={() => handleEditSlide(item)}
+                    style={styles.editBtn}
+                    disabled={isSaving || removing}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Replace slide ${slotNumber}`}
+                  >
+                    <Text style={styles.editBtnText}>✎</Text>
+                  </Pressable>
+                  {isCustom && (
+                    <Pressable
+                      onPress={() => setPendingRemove(item.photo)}
+                      style={styles.removeBtn}
+                      disabled={isSaving}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        item.kind === 'custom'
+                          ? `Revert slide ${slotNumber} to default`
+                          : `Remove slide ${slotNumber}`
+                      }
+                    >
+                      <Text style={styles.removeBtnText}>✕</Text>
+                    </Pressable>
+                  )}
+                </View>
+              );
+            }}
           />
 
           <Pressable onPress={handlePickPhoto} style={styles.addBtn} disabled={uploading}>
             {uploading ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.addBtnText}>+ Add Photo</Text>
+              <Text style={styles.addBtnText}>+ Add Extra Photo</Text>
             )}
           </Pressable>
         </View>
       </Modal>
 
-      <Modal visible={!!pendingDelete} transparent animationType="fade" onRequestClose={() => setPendingDelete(null)}>
+      <Modal visible={!!pendingRemove} transparent animationType="fade" onRequestClose={() => setPendingRemove(null)}>
         <View style={styles.confirmOverlay}>
           <View style={styles.confirmDialog}>
-            <Text style={styles.confirmTitle}>Remove this photo?</Text>
-            <Text style={styles.confirmMessage}>It'll disappear from every player's carousel too.</Text>
+            <Text style={styles.confirmTitle}>
+              {removeDialogIsRevert ? 'Revert this slide to its default photo?' : 'Remove this photo?'}
+            </Text>
+            <Text style={styles.confirmMessage}>
+              {removeDialogIsRevert
+                ? "It'll go back to the original court photo for everyone."
+                : "It'll disappear from every player's carousel too."}
+            </Text>
             <View style={styles.confirmActions}>
-              <Pressable onPress={() => setPendingDelete(null)} style={styles.keepBtn}>
+              <Pressable onPress={() => setPendingRemove(null)} style={styles.keepBtn}>
                 <Text style={styles.keepBtnText}>Keep It</Text>
               </Pressable>
-              <Pressable onPress={confirmDelete} style={styles.confirmBtn} disabled={deleting}>
-                {deleting ? (
+              <Pressable onPress={confirmRemove} style={styles.confirmBtn} disabled={removing}>
+                {removing ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={styles.confirmBtnText}>Remove</Text>
+                  <Text style={styles.confirmBtnText}>{removeDialogIsRevert ? 'Revert' : 'Remove'}</Text>
                 )}
               </Pressable>
             </View>
@@ -170,7 +239,6 @@ const styles = StyleSheet.create({
   helper: { color: '#666', fontSize: 13, lineHeight: 19, padding: 16, paddingBottom: 4 },
   grid: { padding: 12, paddingBottom: 24, flexGrow: 1 },
   row: { gap: 12 },
-  emptyText: { color: '#888', fontSize: 13, textAlign: 'center', marginTop: 40 },
   thumbWrap: {
     flex: 1,
     aspectRatio: 16 / 9,
@@ -180,6 +248,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   thumb: { width: '100%', height: '100%' },
+  slideLabel: {
+    position: 'absolute',
+    left: 6,
+    top: 6,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  slideLabelText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   removeBtn: {
     position: 'absolute',
     right: 6,
@@ -192,6 +270,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   removeBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  editBtn: {
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  savingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   addBtn: {
     backgroundColor: AppColors.forestGreen,
     borderRadius: 12,

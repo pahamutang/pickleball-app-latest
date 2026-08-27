@@ -12,6 +12,7 @@ import {
 import { AppColors } from '../colors';
 import { OrderItem, Player, amountDue, amountPaid, generateId, grandTotal, isFullyPaid, orderTotal } from '../types';
 import { formatCurrency } from '../utils/currency';
+import { todayIso, toIsoDate } from '../bookingTypes';
 import { loadSettings } from '../services/settingsService';
 import { sendReceiptEmail } from '../services/emailService';
 import { usePaymentLog } from '../context/PaymentLogContext';
@@ -139,11 +140,23 @@ export default function HomeScreen({
       // unpaid line, which will get logged normally once it's actually
       // collected (PAID chip or cash calculator), same as any other order.
       const diff = newTotal - oldTotal;
+      // If the per-unit price didn't change, the increase is purely more
+      // units — show it as such (e.g. "x5"), not always "x1". The row's
+      // total still comes out to the same `diff`, since price × quantity
+      // here is exactly updated.price × (updated.quantity -
+      // previousOrder.quantity). Only when the price itself was also
+      // edited (so the split between "more units" and "price change"
+      // isn't well-defined) does this fall back to a single "x1" line
+      // whose price is the whole diff — same behavior as before.
+      const priceUnchanged = updated.price === previousOrder.price;
+      const addedQuantity = priceUnchanged
+        ? Math.max(updated.quantity - previousOrder.quantity, 1)
+        : 1;
       const extraOrder: OrderItem = {
         id: generateId(),
         name: `${updated.name} (added)`,
-        price: diff,
-        quantity: 1,
+        price: priceUnchanged ? updated.price : diff,
+        quantity: addedQuantity,
         isPaid: false,
       };
       updatePlayer(playerId, (p) => ({
@@ -417,10 +430,23 @@ export default function HomeScreen({
       })),
     }));
 
-    // Get today's payments from the payment log
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    // Get today's payments from the payment log. "Today" here must mean
+    // the same thing it means everywhere else in the app (local calendar
+    // date, e.g. the booking screen's todayIso()/toIsoDate()) — not UTC.
+    // This used to compare `new Date().toISOString().split('T')[0]`
+    // (UTC date) against each payment's stored UTC timestamp, which
+    // itself is fine and self-consistent, EXCEPT emailService.ts then
+    // re-filtered that same list using the LOCAL date instead. Manila is
+    // UTC+8, so those two definitions of "today" disagree for the 8
+    // hours around local midnight — a payment collected the evening
+    // before could pass this UTC-based filter but get silently dropped
+    // by emailService's local-based one, making the receipt's "today's
+    // total collected" undercount. Standardizing on local date here (and
+    // trusting this already-filtered list in emailService, see there)
+    // fixes it.
+    const today = todayIso();
     const todaysPayments = payments.filter(
-      (p) => p.date.startsWith(today) && p.status === 'paid'
+      (p) => toIsoDate(new Date(p.date)) === today && p.status === 'paid'
     );
 
     const result = await sendReceiptEmail({

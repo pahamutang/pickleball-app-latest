@@ -118,7 +118,18 @@ function PlayerApp() {
         {tab === 'booking' ? (
           <BookingScreen onOpenBill={() => setTab('bill')} />
         ) : (
-          <MyBillScreen onBack={() => setTab('booking')} />
+          <MyBillScreen
+            onBack={() => setTab('booking')}
+            // The owner may have cleared this player's session (e.g. end
+            // of day). `hasJoined` was only ever checked once at sign-in,
+            // so without this, MyBillScreen's "no active session" state
+            // was a dead end — no way back to JoinSessionScreen short of
+            // signing all the way out and back in. Flipping hasJoined
+            // back to false re-renders JoinSessionScreen right here, and
+            // its own onJoined flips it back to true once they've added
+            // themselves again.
+            onRejoin={() => setHasJoined(false)}
+          />
         )}
       </VenuePhotosProvider>
     </BookingProvider>

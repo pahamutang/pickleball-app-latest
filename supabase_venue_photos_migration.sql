@@ -69,6 +69,31 @@ create table if not exists public.venue_photos (
 
 alter table public.venue_photos enable row level security;
 
+-- Backfill: earlier versions of this table let every row default to
+-- position 0. Spread any such rows out by insertion order before the
+-- uniqueness constraint below is added, so it doesn't fail on existing data.
+with ordered as (
+  select id, row_number() over (order by position asc, created_at asc) - 1 as rn
+  from public.venue_photos
+)
+update public.venue_photos v
+set position = ordered.rn
+from ordered
+where v.id = ordered.id and v.position <> ordered.rn;
+
+-- Guarantees the app's "one row per slide position" assumption at the DB
+-- level too — belt-and-suspenders alongside the client-side insert/update
+-- branching in setSlidePhoto, so even a rapid double-tap can't leave two
+-- rows claiming the same slide.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'venue_photos_position_unique'
+  ) then
+    alter table public.venue_photos add constraint venue_photos_position_unique unique (position);
+  end if;
+end $$;
+
 -- Everyone signed in can see the current photo set — players included,
 -- since it's their carousel too.
 drop policy if exists "venue_photos_select_all" on public.venue_photos;

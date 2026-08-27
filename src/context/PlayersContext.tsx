@@ -66,23 +66,44 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
   // True while we're applying a fetch/realtime update into local state, so
   // the sync effect below doesn't try to "write back" data we just read.
   const applyingRemoteRef = useRef(false);
+  // Coalesce overlapping refetch requests instead of dropping them — see
+  // the matching comment in BookingContext.tsx. A single "add player +
+  // add order items" burst fires several sequential writes, each of which
+  // triggers its own realtime event -> fetchAll() call across the two
+  // subscribed tables. If a fetch is still in flight when the next event
+  // arrives, bailing out silently would leave `players` stuck missing
+  // whichever update raced the in-flight fetch.
+  const fetchingRef = useRef(false);
+  const refetchPendingRef = useRef(false);
 
   const fetchAll = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('players')
-      .select(
-        'id, name, court_fee, court_fee_paid, order_items(id, name, price, quantity, is_paid)'
-      )
-      .order('created_at', { ascending: true });
-    if (error) {
-      console.warn('Failed to load players', error);
+    if (fetchingRef.current) {
+      refetchPendingRef.current = true;
       return;
     }
-    const rows = (data ?? []) as PlayerRow[];
-    const mapped = rows.map(rowToPlayer);
-    applyingRemoteRef.current = true;
-    lastSyncedRef.current = mapped;
-    setPlayers(mapped);
+    fetchingRef.current = true;
+    try {
+      do {
+        refetchPendingRef.current = false;
+        const { data, error } = await supabase
+          .from('players')
+          .select(
+            'id, name, court_fee, court_fee_paid, order_items(id, name, price, quantity, is_paid)'
+          )
+          .order('created_at', { ascending: true });
+        if (error) {
+          console.warn('Failed to load players', error);
+          break;
+        }
+        const rows = (data ?? []) as PlayerRow[];
+        const mapped = rows.map(rowToPlayer);
+        applyingRemoteRef.current = true;
+        lastSyncedRef.current = mapped;
+        setPlayers(mapped);
+      } while (refetchPendingRef.current);
+    } finally {
+      fetchingRef.current = false;
+    }
   }, []);
 
   useEffect(() => {

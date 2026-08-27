@@ -9,12 +9,12 @@
     "assetBundlePatterns": [
       "**/*"
     ],
-    "icon": "./assets/mt_pickle_logo.jpg",
+    "icon": "./assets/icon.png",
     "android": {
       "package": "com.mtpicklepark.pickleballapp",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/mt_pickle_logo.jpg",
-        "backgroundColor": "#0B301F"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
       }
     },
     "ios": {
@@ -23,6 +23,15 @@
     "owner": "daven2002",
     "plugins": [
       "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
       [
         "expo-image-picker",
         {

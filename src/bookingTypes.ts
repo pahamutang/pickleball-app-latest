@@ -175,6 +175,53 @@ export function formatDateChip(date: Date): { weekday: string; day: string; mont
   };
 }
 
+export interface CalendarDay {
+  iso: string;
+  day: number;
+  // false for the previous/next-month padding days shown to fill out the
+  // grid's leading/trailing week — kept tappable (so a user can jump
+  // straight from the tail of one month into the next) but rendered
+  // dimmer so the current month reads clearly.
+  inCurrentMonth: boolean;
+}
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+// Builds a full 6-row-max grid (always a multiple of 7) for the given
+// month, padded with the trailing days of the previous month and the
+// leading days of the next so every week row is complete — the standard
+// shape for a calendar month view. `month0` is 0-indexed (0 = January),
+// matching JS Date's convention throughout this file.
+export function monthGrid(year: number, month0: number): CalendarDay[] {
+  const firstOfMonth = new Date(year, month0, 1);
+  const startWeekday = firstOfMonth.getDay(); // 0 = Sun
+  const daysInThisMonth = new Date(year, month0 + 1, 0).getDate();
+
+  const cells: CalendarDay[] = [];
+
+  for (let i = 0; i < startWeekday; i++) {
+    const date = new Date(year, month0, 1 - (startWeekday - i));
+    cells.push({ iso: toIsoDate(date), day: date.getDate(), inCurrentMonth: false });
+  }
+  for (let d = 1; d <= daysInThisMonth; d++) {
+    cells.push({ iso: toIsoDate(new Date(year, month0, d)), day: d, inCurrentMonth: true });
+  }
+  let trailing = 1;
+  while (cells.length % 7 !== 0) {
+    const date = new Date(year, month0 + 1, trailing);
+    cells.push({ iso: toIsoDate(date), day: date.getDate(), inCurrentMonth: false });
+    trailing++;
+  }
+  return cells;
+}
+
+export function monthLabel(year: number, month0: number): string {
+  return `${MONTH_NAMES[month0]} ${year}`;
+}
+
 export function formatFriendlyDate(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number);
   const date = new Date(y, m - 1, d);

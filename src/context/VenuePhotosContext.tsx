@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { uploadVenuePhotoFile, deleteVenuePhotoFile } from '../services/venuePhotoStorage';
+import { nextExtraPosition } from '../utils/venueSlides';
 import type { MutationResult } from './BookingContext';
 
 // Venue photos are a shared Supabase table + storage bucket (see
@@ -17,6 +18,11 @@ import type { MutationResult } from './BookingContext';
 // BookingContext keeps reservations in sync. When the owner changes the
 // photos, every player's carousel updates on its own, no reinstall or
 // manual refresh needed.
+//
+// `position` is what makes a slide independently targetable: 0-4 map to
+// the 5 bundled default slides (see utils/venueSlides.ts), and a row at
+// one of those positions overrides that exact slide and no other.
+// Anything at position >= 5 is an extra photo appended after them.
 
 export interface VenuePhoto {
   id: string;
@@ -29,8 +35,19 @@ interface VenuePhotosContextValue {
   photos: VenuePhoto[];
   loading: boolean;
   uploading: boolean;
+  savingSlot: number | null;
   addPhoto: (base64: string, sourceUri: string) => Promise<MutationResult>;
   removePhoto: (photo: VenuePhoto) => Promise<MutationResult>;
+  // Sets the image for one exact slide position. If a custom photo
+  // already occupies that position, its file/row is updated in place. If
+  // not (a still-default slide), a new row is inserted at that position.
+  // Either way, only this one position is ever touched.
+  setSlidePhoto: (
+    position: number,
+    existing: VenuePhoto | null,
+    base64: string,
+    sourceUri: string
+  ) => Promise<MutationResult>;
 }
 
 const VenuePhotosContext = createContext<VenuePhotosContextValue | undefined>(undefined);
@@ -69,22 +86,37 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
   const [photos, setPhotos] = useState<VenuePhoto[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [savingSlot, setSavingSlot] = useState<number | null>(null);
+  // See the matching comment in BookingContext.tsx: coalesce overlapping
+  // refetch requests instead of dropping them, so a burst of realtime
+  // events (e.g. several photo slots saved in quick succession) never
+  // leaves `photos` stuck missing one of them.
   const fetchingRef = useRef(false);
+  const refetchPendingRef = useRef(false);
 
   const fetchAll = async () => {
-    if (fetchingRef.current) return;
-    fetchingRef.current = true;
-    const { data, error } = await supabase
-      .from('venue_photos')
-      .select('id, url, storage_path, position')
-      .order('created_at', { ascending: true });
-    fetchingRef.current = false;
-    if (error) {
-      console.warn('Failed to load venue photos', error);
+    if (fetchingRef.current) {
+      refetchPendingRef.current = true;
       return;
     }
-    const rows = (data ?? []) as VenuePhotoRow[];
-    setPhotos(rows.map(rowToPhoto));
+    fetchingRef.current = true;
+    try {
+      do {
+        refetchPendingRef.current = false;
+        const { data, error } = await supabase
+          .from('venue_photos')
+          .select('id, url, storage_path, position')
+          .order('position', { ascending: true });
+        if (error) {
+          console.warn('Failed to load venue photos', error);
+          break;
+        }
+        const rows = (data ?? []) as VenuePhotoRow[];
+        setPhotos(rows.map(rowToPhoto));
+      } while (refetchPendingRef.current);
+    } finally {
+      fetchingRef.current = false;
+    }
   };
 
   useEffect(() => {
@@ -104,6 +136,8 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Adds an extra photo after the 5 base slides — never touches or
+  // reorders any existing slide, base or extra.
   const addPhoto = async (base64: string, sourceUri: string): Promise<MutationResult> => {
     setUploading(true);
     try {
@@ -112,10 +146,11 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
       if (!userId) return { ok: false, error: 'You need to be signed in to do that.' };
 
       const { path, url } = await uploadVenuePhotoFile(base64, sourceUri);
+      const position = nextExtraPosition(photos);
 
       const { data, error } = await supabase
         .from('venue_photos')
-        .insert({ storage_path: path, url, created_by: userId })
+        .insert({ storage_path: path, url, position, created_by: userId })
         .select('id, url, storage_path, position')
         .single();
 
@@ -142,6 +177,11 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Removing a base slide's (position 0-4) custom photo just deletes its
+  // row — the carousel then falls back to that slide's bundled default
+  // (see buildVenueSlides), it never disappears. Removing an extra photo
+  // (position >= 5) removes that slide outright, since it has no default
+  // to fall back to.
   const removePhoto = async (photo: VenuePhoto): Promise<MutationResult> => {
     const { error } = await supabase.from('venue_photos').delete().eq('id', photo.id);
     if (error) {
@@ -153,8 +193,80 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
     return { ok: true };
   };
 
+  // Sets the photo for one exact slide, addressed by its stable position
+  // — not by list index — so this can never drift onto the wrong slide
+  // even if other rows are added or removed around the same time. The new
+  // file uploads under its own unique path first; only once the DB write
+  // for THIS position succeeds does the previous file (if any) for THIS
+  // position get cleaned up. Every other row, and every other slide, is
+  // left completely untouched.
+  const setSlidePhoto = async (
+    position: number,
+    existing: VenuePhoto | null,
+    base64: string,
+    sourceUri: string
+  ): Promise<MutationResult> => {
+    setSavingSlot(position);
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData.user?.id;
+      if (!userId) return { ok: false, error: 'You need to be signed in to do that.' };
+
+      const { path, url } = await uploadVenuePhotoFile(base64, sourceUri);
+
+      if (existing) {
+        // This slide already has a custom photo — update that one row by
+        // its id. Its position never changes.
+        const { data, error } = await supabase
+          .from('venue_photos')
+          .update({ storage_path: path, url })
+          .eq('id', existing.id)
+          .select('id, url, storage_path, position')
+          .single();
+
+        if (error) {
+          await deleteVenuePhotoFile(path);
+          console.warn('Failed to replace venue photo', error);
+          return { ok: false, error: describeError(error) };
+        }
+
+        const updated = rowToPhoto(data as VenuePhotoRow);
+        setPhotos((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+        await deleteVenuePhotoFile(existing.storagePath);
+        return { ok: true };
+      }
+
+      // This slide is still showing its bundled default — insert a new
+      // row at exactly this position so it (and only it) is overridden.
+      const { data, error } = await supabase
+        .from('venue_photos')
+        .insert({ storage_path: path, url, position, created_by: userId })
+        .select('id, url, storage_path, position')
+        .single();
+
+      if (error) {
+        await deleteVenuePhotoFile(path);
+        console.warn('Failed to save venue photo', error);
+        return { ok: false, error: describeError(error) };
+      }
+
+      setPhotos((prev) => {
+        const newPhoto = rowToPhoto(data as VenuePhotoRow);
+        return prev.some((p) => p.id === newPhoto.id) ? prev : [...prev, newPhoto];
+      });
+      return { ok: true };
+    } catch (error) {
+      console.warn('Failed to upload venue photo', error);
+      return { ok: false, error: describeError(error) };
+    } finally {
+      setSavingSlot(null);
+    }
+  };
+
   return (
-    <VenuePhotosContext.Provider value={{ photos, loading, uploading, addPhoto, removePhoto }}>
+    <VenuePhotosContext.Provider
+      value={{ photos, loading, uploading, savingSlot, addPhoto, removePhoto, setSlidePhoto }}
+    >
       {children}
     </VenuePhotosContext.Provider>
   );

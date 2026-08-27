@@ -73,20 +73,39 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
   // actually changed (same pattern as PlayersContext).
   const lastSyncedRef = useRef<Payment[]>([]);
   const applyingRemoteRef = useRef(false);
+  // Coalesce overlapping refetch requests instead of dropping them — see
+  // the matching comment in BookingContext.tsx. Logging several payments
+  // in quick succession fires a realtime event per row; without this, a
+  // fetch still in flight when the next event arrives would just be
+  // ignored, leaving `payments` stuck missing whichever one raced it.
+  const fetchingRef = useRef(false);
+  const refetchPendingRef = useRef(false);
 
   const fetchAll = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('payments')
-      .select('id, player_id, description, amount, method, status, date, items')
-      .order('date', { ascending: false });
-    if (error) {
-      console.warn('Failed to load payment history', error);
+    if (fetchingRef.current) {
+      refetchPendingRef.current = true;
       return;
     }
-    const mapped = (data ?? []).map(rowToPayment) as Payment[];
-    applyingRemoteRef.current = true;
-    lastSyncedRef.current = mapped;
-    setPayments(mapped);
+    fetchingRef.current = true;
+    try {
+      do {
+        refetchPendingRef.current = false;
+        const { data, error } = await supabase
+          .from('payments')
+          .select('id, player_id, description, amount, method, status, date, items')
+          .order('date', { ascending: false });
+        if (error) {
+          console.warn('Failed to load payment history', error);
+          break;
+        }
+        const mapped = (data ?? []).map(rowToPayment) as Payment[];
+        applyingRemoteRef.current = true;
+        lastSyncedRef.current = mapped;
+        setPayments(mapped);
+      } while (refetchPendingRef.current);
+    } finally {
+      fetchingRef.current = false;
+    }
   }, []);
 
   const persistAnchor = useCallback((anchor: number) => {

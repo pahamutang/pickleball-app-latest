@@ -13,6 +13,7 @@ import { AppColors } from '../colors';
 import { Payment, PaymentStatus } from '../payment';
 import { usePaymentLog } from '../context/PaymentLogContext';
 import { usePlayers } from '../context/PlayersContext';
+import { formatCurrency } from '../utils/currency';
 
 type FilterOption = 'all' | PaymentStatus;
 
@@ -25,10 +26,6 @@ const STATUS_COLORS: Record<PaymentStatus, string> = {
   pending: '#F9A825',
   failed: '#C62828',
 };
-
-function formatCurrency(amount: number) {
-  return `₱${amount.toFixed(2)}`;
-}
 
 function formatDate(iso: string) {
   const d = new Date(iso);

@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { AppColors } from '../colors';
 import { useAuth } from '../context/AuthContext';
-import { useBooking } from '../context/BookingContext';
+import { useBooking, BookedSlot } from '../context/BookingContext';
 import {
   COURTS,
   Court,
@@ -38,23 +38,14 @@ import PaidChip from '../components/PaidChip';
 import VenuePhotoCarousel from '../components/VenuePhotoCarousel';
 import VenuePhotoManagerModal from '../components/VenuePhotoManagerModal';
 import { useVenuePhotos } from '../context/VenuePhotosContext';
+import { buildVenueSlides } from '../utils/venueSlides';
 import VenueLocationCard from '../components/VenueLocationCard';
 import CancelReservationModal from '../components/CancelReservationModal';
 import AlertModal from '../components/AlertModal';
 import ReservationConfirmedModal from '../components/ReservationConfirmedModal';
+import CalendarPickerModal from '../components/CalendarPickerModal';
 
 const DATE_STRIP_DAYS = 14;
-
-// Shown until the owner has added any photos of their own via "Edit
-// Photos" (see VenuePhotoManagerModal) — bundled with the app so the
-// carousel never looks empty on a fresh install.
-const DEFAULT_VENUE_PHOTOS = [
-  require('../../assets/venue/court_1.jpg'),
-  require('../../assets/venue/court_2.jpg'),
-  require('../../assets/venue/court_3.jpg'),
-  require('../../assets/venue/court_4.jpg'),
-  require('../../assets/venue/court_5.jpg'),
-];
 
 const AMENITIES = [
   'Parking',
@@ -89,13 +80,23 @@ export default function BookingScreen({
   onOpenLegacy?: () => void;
   onOpenBill?: () => void;
 }) {
-  const { reservations, loading, addReservation, cancelReservation, setPaid } = useBooking();
+  const {
+    reservations,
+    loading,
+    changeVersion,
+    getBookedSlots,
+    addReservation,
+    cancelReservation,
+    setPaid,
+    mergeReservationHours,
+  } = useBooking();
   const { session, profile } = useAuth();
   const isOwner = profile?.role === 'owner';
   const { photos: venuePhotos } = useVenuePhotos();
-  const carouselPhotos = venuePhotos.length
-    ? venuePhotos.map((p) => ({ uri: p.url }))
-    : DEFAULT_VENUE_PHOTOS;
+  const carouselPhotos = useMemo(
+    () => buildVenueSlides(venuePhotos).map((slide) => slide.source),
+    [venuePhotos]
+  );
   const [showPhotoManager, setShowPhotoManager] = useState(false);
   const myName = profile?.display_name?.trim() || '';
 
@@ -104,17 +105,30 @@ export default function BookingScreen({
 
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [showDateStrip, setShowDateStrip] = useState(false);
+  const [showCalendar, setShowCalendar] = useState(false);
   // Selected hours, keyed by court name — e.g. { 'Court 1': [7, 8], 'Court 3': [7] }.
   // A court with no selection is either absent from this map or maps to [].
   // This lets a single booking cover multiple courts at once (e.g. Court 1
   // AND Court 3 for the same time slot), instead of being locked to one
   // court like the old `selectedCourt` + `selectedHours` pair was.
   const [selectedSlots, setSelectedSlots] = useState<Record<string, number[]>>({});
-  // Players book under their own account name — locked, not free text —
-  // so nobody can reserve a court "as" someone else. Owners keep the
-  // free-text field since they're booking on behalf of walk-in customers.
+  // Free text for everyone, owner and player alike — pre-filled with the
+  // player's own profile name as a convenient default, but always
+  // editable and replaceable. It used to be locked to the player's
+  // account name (no typing allowed), which meant a stale or wrong
+  // profile display_name (e.g. "Test" left over from account setup)
+  // could never be corrected here — every booking silently went out
+  // under that name no matter what the player intended to type.
   const [customerName, setCustomerName] = useState(isOwner ? '' : myName);
   const [players, setPlayers] = useState(2);
+  // Tapping the player count switches it from a display Text into an
+  // editable TextInput pre-filled with the current number, so someone
+  // with e.g. 20 players doesn't have to tap "+" eighteen times — they
+  // can just type the exact number. `playersText` holds the in-progress
+  // typed value (kept separate from `players` so a half-typed/invalid
+  // value never leaks into the actual reservation before it's confirmed).
+  const [editingPlayers, setEditingPlayers] = useState(false);
+  const [playersText, setPlayersText] = useState('2');
   const [notes, setNotes] = useState('');
   const [pendingCancel, setPendingCancel] = useState<Reservation | null>(null);
 
@@ -124,14 +138,43 @@ export default function BookingScreen({
     setSelectedSlots({});
   }, [selectedDate]);
 
+  // Reservations THIS ACCOUNT can see in full (name, notes, etc). For the
+  // owner that's every reservation on this date; for a player it's now
+  // only their own (see BookingContext / the privacy-fix migration) — so
+  // this is right for "my reservation" logic (merging more hours into an
+  // existing booking, listing "My Reservations") but it is NOT a
+  // complete picture of which slots are taken park-wide anymore. Use
+  // `bookedSlots` below for that.
   const reservationsForDate = useMemo(
     () => reservations.filter((r) => r.date === selectedDate),
     [reservations, selectedDate]
   );
 
+  // Park-wide availability for the selected date — every court/hour
+  // that's taken and whether it's paid, with no other customer's name or
+  // notes attached (sourced from the get_booked_slots RPC). This is the
+  // only reliable source for "is this slot free," for either role, since
+  // `reservations` no longer necessarily contains every OTHER customer's
+  // booking for a player account.
+  const [bookedSlots, setBookedSlots] = useState<BookedSlot[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getBookedSlots(selectedDate).then((slots) => {
+      if (!cancelled) setBookedSlots(slots);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetches whenever the date changes, and whenever a realtime
+    // reservations change comes in (changeVersion) — this RPC call isn't
+    // itself realtime-subscribed, so without that second dependency the
+    // grid would go stale the moment someone else booked or cancelled a
+    // slot instead of updating live like the rest of the screen.
+  }, [selectedDate, changeVersion, getBookedSlots]);
+
   const cellStatus = (court: Court, hour: number): CellStatus => {
     if (isPastSlot(selectedDate, hour)) return 'past';
-    const match = reservationsForDate.find((r) => r.court === court.name && r.hours.includes(hour));
+    const match = bookedSlots.find((s) => s.court === court.name && s.hour === hour);
     if (match) return match.isPaid ? 'booked' : 'pending';
     if ((selectedSlots[court.name] ?? []).includes(hour)) return 'selected';
     return 'available';
@@ -174,7 +217,24 @@ export default function BookingScreen({
     setSelectedSlots({});
     setCustomerName(isOwner ? '' : myName);
     setPlayers(2);
+    setPlayersText('2');
+    setEditingPlayers(false);
     setNotes('');
+  };
+
+  // A sane upper bound just to stop a mistyped/garbage value (e.g. an
+  // accidental extra digit) from producing something absurd — not a real
+  // limit on group size, which the courts obviously can't fit 8 of anyway
+  // but a big private event booking every court could plausibly exceed 8.
+  const MAX_REASONABLE_PLAYERS = 200;
+
+  const commitPlayersText = () => {
+    const parsed = parseInt(playersText.trim(), 10);
+    const clamped =
+      isNaN(parsed) || parsed < 1 ? players : Math.min(MAX_REASONABLE_PLAYERS, parsed);
+    setPlayers(clamped);
+    setPlayersText(String(clamped));
+    setEditingPlayers(false);
   };
 
   const [alertState, setAlertState] = useState<{
@@ -211,13 +271,20 @@ export default function BookingScreen({
       });
       return;
     }
-    // Re-check against the latest reservations right before saving, in case
-    // something else got booked in the moments since the slots were picked.
-    // Checked per-court, since each court now has its own independent
-    // selection of hours.
+    // Re-check against the latest availability right before saving, in
+    // case something else got booked in the moments since the slots were
+    // picked — a fresh RPC call, not the (possibly a render or two stale)
+    // `bookedSlots` state, and not `reservationsForDate` (which, for a
+    // player, no longer contains any OTHER customer's booking at all —
+    // see BookingContext). Checked per-court, since each court now has
+    // its own independent selection of hours. This is still just a nice
+    // fast-fail for the common case, same as before: the real guarantee
+    // against a race is the database trigger in
+    // supabase_double_booking_migration.sql.
+    const latestBookedSlots = await getBookedSlots(selectedDate);
     const conflict = activeCourtNames.some((courtName) =>
       selectedSlots[courtName].some((h) =>
-        reservationsForDate.some((r) => r.court === courtName && r.hours.includes(h))
+        latestBookedSlots.some((s) => s.court === courtName && s.hour === h)
       )
     );
     if (conflict) {
@@ -231,38 +298,121 @@ export default function BookingScreen({
     }
 
     // One reservation row per selected court (the backend model ties a
-    // reservation to a single court), but they're all created together as
-    // one booking action covering every court the player selected.
-    const newReservations: Reservation[] = activeCourtNames.map((courtName) => ({
-      id: generateId(),
-      customerName: trimmedName,
-      court: courtName,
-      date: selectedDate,
-      hours: selectedSlots[courtName],
-      players,
-      notes: notes.trim(),
-      isPaid: false,
-      createdAt: Date.now(),
-      createdBy: session.user.id,
-    }));
+    // reservation to a single court). But if this same booker (same
+    // account, same customer name) already has an active reservation for
+    // a court+date they've picked more hours on, extend that existing row
+    // instead of creating a duplicate one — otherwise "My Reservations"
+    // fills up with a separate card every time someone adds more time to
+    // a court they already booked that day, whether or not the earlier
+    // booking has been paid yet.
+    //
+    // This auto-merge is only safe for a player booking under their own
+    // account: there, `session.user.id` really does uniquely identify one
+    // person, and the name match is just extra confirmation on top of
+    // that. For an OWNER, `session.user.id` is the owner's own id on
+    // every single booking they create — they're booking on behalf of
+    // walk-in customers, not themselves — so matching by
+    // `createdBy === session.user.id` collapses to matching on name
+    // alone. Two different real customers can easily share a name (e.g.
+    // "Juan Dela Cruz"), and if both book the same court on the same day,
+    // the second booking would silently merge into the first's row,
+    // combining their hours, bumping their player count, and appending
+    // their notes onto a stranger's reservation. So owner bookings always
+    // get their own row — no auto-merge — and two different customers can
+    // never accidentally collide.
+    type PlannedMerge = {
+      existing: Reservation;
+      mergedHours: number[];
+      mergedPlayers: number;
+      mergedNotes: string;
+    };
+    const merges: PlannedMerge[] = [];
+    const inserts: Reservation[] = [];
+
+    for (const courtName of activeCourtNames) {
+      const existing = !isOwner
+        ? reservationsForDate.find(
+            (r) =>
+              r.court === courtName &&
+              r.createdBy === session.user.id &&
+              r.customerName.trim().toLowerCase() === trimmedName.toLowerCase()
+          )
+        : undefined;
+      if (existing) {
+        const mergedHours = Array.from(new Set([...existing.hours, ...selectedSlots[courtName]])).sort(
+          (a, b) => a - b
+        );
+        const trimmedNotes = notes.trim();
+        const mergedNotes =
+          trimmedNotes && trimmedNotes !== existing.notes
+            ? existing.notes
+              ? `${existing.notes}; ${trimmedNotes}`
+              : trimmedNotes
+            : existing.notes;
+        merges.push({
+          existing,
+          mergedHours,
+          mergedPlayers: Math.max(existing.players, players),
+          mergedNotes,
+        });
+      } else {
+        inserts.push({
+          id: generateId(),
+          customerName: trimmedName,
+          court: courtName,
+          date: selectedDate,
+          hours: selectedSlots[courtName],
+          players,
+          notes: notes.trim(),
+          isPaid: false,
+          createdAt: Date.now(),
+          createdBy: session.user.id,
+        });
+      }
+    }
 
     setSubmitting(true);
-    const saved: Reservation[] = [];
+
+    const succeededMerges: PlannedMerge[] = [];
+    const succeededInserts: Reservation[] = [];
     let failure: string | undefined;
-    for (const reservation of newReservations) {
-      const result = await addReservation(reservation);
+
+    for (const m of merges) {
+      const result = await mergeReservationHours(
+        m.existing.id,
+        m.mergedHours,
+        m.mergedPlayers,
+        m.mergedNotes
+      );
       if (!result.ok) {
         failure = result.error;
         break;
       }
-      saved.push(reservation);
+      succeededMerges.push(m);
+    }
+
+    if (!failure) {
+      for (const reservation of inserts) {
+        const result = await addReservation(reservation);
+        if (!result.ok) {
+          failure = result.error;
+          break;
+        }
+        succeededInserts.push(reservation);
+      }
     }
 
     if (failure) {
-      // Don't leave a half-booked state — if Court 1 saved but Court 2
-      // failed, undo Court 1 too, so the player either gets every court
-      // they asked for or none of them.
-      await Promise.all(saved.map((r) => cancelReservation(r.id)));
+      // Don't leave a half-booked state — undo everything this action
+      // touched: merged reservations get their pre-merge hours/players/
+      // notes restored, and any fresh inserts get cancelled. Either the
+      // player gets every court they asked for, or none of them.
+      await Promise.all([
+        ...succeededMerges.map((m) =>
+          mergeReservationHours(m.existing.id, m.existing.hours, m.existing.players, m.existing.notes)
+        ),
+        ...succeededInserts.map((r) => cancelReservation(r.id)),
+      ]);
       setSubmitting(false);
       setAlertState({
         variant: 'error',
@@ -274,7 +424,18 @@ export default function BookingScreen({
 
     setSubmitting(false);
     resetForm();
-    setConfirmedReservations(newReservations);
+    // Confirmation shows every court this action touched — for a merged
+    // court, that's its full updated hour list (old + new), not just the
+    // hours just added, so the player sees exactly what's reserved now.
+    setConfirmedReservations([
+      ...succeededMerges.map((m) => ({
+        ...m.existing,
+        hours: m.mergedHours,
+        players: m.mergedPlayers,
+        notes: m.mergedNotes,
+      })),
+      ...succeededInserts,
+    ]);
   };
 
   // Only the owner can flip paid status — enforced here for the UI, and
@@ -327,6 +488,38 @@ export default function BookingScreen({
         return Math.min(...a.hours) - Math.min(...b.hours);
       });
   }, [reservations, today, isOwner, session?.user.id]);
+
+  // Groups `upcoming` by (booker + customer name + date) — the same key
+  // the merge logic above uses to recognize "the same booking session" —
+  // so a player who reserved several different courts the same day sees
+  // one card listing every court instead of one card per court cluttering
+  // the list.
+  const upcomingGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; customerName: string; date: string; items: Reservation[]; total: number }
+    >();
+    for (const r of upcoming) {
+      const key = `${r.createdBy}|${r.date}|${r.customerName.trim().toLowerCase()}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.items.push(r);
+        existing.total += reservationTotal(r);
+      } else {
+        groups.set(key, {
+          key,
+          customerName: r.customerName,
+          date: r.date,
+          items: [r],
+          total: reservationTotal(r),
+        });
+      }
+    }
+    // `upcoming` is already sorted by date then earliest hour, and Map
+    // preserves insertion order, so groups come out in the same
+    // chronological order the flat list used to.
+    return Array.from(groups.values());
+  }, [upcoming]);
 
   if (loading) {
     return (
@@ -384,33 +577,58 @@ export default function BookingScreen({
           </View>
         </View>
 
-        {/* Date navigator — prev/next arrows + tap to open the quick-jump strip */}
+        {/* Date navigator — prev/next arrows + tap to open the quick-jump
+            strip, plus a calendar button for jumping straight to any
+            future date (e.g. next week) without stepping through days. */}
         <View style={styles.dateNav}>
+          <View style={styles.dateNavSteppers}>
+            <Pressable
+              onPress={() => setSelectedDate((d) => (d > today ? addDays(d, -1) : d))}
+              disabled={selectedDate <= today}
+              style={[styles.dateNavArrow, selectedDate <= today && styles.dateNavArrowDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Previous day"
+            >
+              <Text style={styles.dateNavArrowText}>‹</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowDateStrip((s) => !s)}
+              style={styles.dateNavLabel}
+              accessibilityRole="button"
+            >
+              <Text style={styles.dateNavLabelText}>← {formatFriendlyDate(selectedDate)}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setSelectedDate((d) => addDays(d, 1))}
+              style={styles.dateNavArrow}
+              accessibilityRole="button"
+              accessibilityLabel="Next day"
+            >
+              <Text style={styles.dateNavArrowText}>›</Text>
+            </Pressable>
+          </View>
           <Pressable
-            onPress={() => setSelectedDate((d) => (d > today ? addDays(d, -1) : d))}
-            disabled={selectedDate <= today}
-            style={[styles.dateNavArrow, selectedDate <= today && styles.dateNavArrowDisabled]}
+            onPress={() => {
+              setShowDateStrip(false);
+              setShowCalendar(true);
+            }}
+            style={styles.calendarButton}
             accessibilityRole="button"
-            accessibilityLabel="Previous day"
+            accessibilityLabel="Open calendar to pick a date"
           >
-            <Text style={styles.dateNavArrowText}>‹</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setShowDateStrip((s) => !s)}
-            style={styles.dateNavLabel}
-            accessibilityRole="button"
-          >
-            <Text style={styles.dateNavLabelText}>← {formatFriendlyDate(selectedDate)}</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setSelectedDate((d) => addDays(d, 1))}
-            style={styles.dateNavArrow}
-            accessibilityRole="button"
-            accessibilityLabel="Next day"
-          >
-            <Text style={styles.dateNavArrowText}>›</Text>
+            <Text style={styles.calendarButtonText}>📅</Text>
           </Pressable>
         </View>
+
+        <CalendarPickerModal
+          visible={showCalendar}
+          selectedDate={selectedDate}
+          onSelect={(iso) => {
+            setSelectedDate(iso);
+            setShowCalendar(false);
+          }}
+          onClose={() => setShowCalendar(false)}
+        />
 
         {showDateStrip && (
           <FlatList
@@ -540,26 +758,58 @@ export default function BookingScreen({
             <Text style={styles.label}>{isOwner ? 'Customer name' : 'Booking under'}</Text>
             <TextInput
               value={customerName}
-              onChangeText={isOwner ? setCustomerName : undefined}
-              editable={isOwner}
+              onChangeText={setCustomerName}
               placeholder="e.g. Juan Dela Cruz"
               placeholderTextColor="#999"
-              style={[styles.input, !isOwner && styles.inputLocked]}
+              style={styles.input}
             />
 
             <Text style={styles.label}>Players</Text>
             <View style={styles.stepperRow}>
               <Pressable
-                onPress={() => setPlayers((p) => Math.max(1, p - 1))}
+                onPress={() => {
+                  const next = Math.max(1, players - 1);
+                  setPlayers(next);
+                  setPlayersText(String(next));
+                }}
                 style={styles.stepperButton}
                 accessibilityRole="button"
                 accessibilityLabel="Decrease player count"
               >
                 <Text style={styles.stepperButtonText}>−</Text>
               </Pressable>
-              <Text style={styles.stepperValue}>{players}</Text>
+
+              {editingPlayers ? (
+                <TextInput
+                  value={playersText}
+                  onChangeText={setPlayersText}
+                  onBlur={commitPlayersText}
+                  onSubmitEditing={commitPlayersText}
+                  keyboardType="number-pad"
+                  autoFocus
+                  selectTextOnFocus
+                  style={styles.stepperInput}
+                  accessibilityLabel="Type exact number of players"
+                />
+              ) : (
+                <Pressable
+                  onPress={() => {
+                    setPlayersText(String(players));
+                    setEditingPlayers(true);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Player count ${players}, tap to type an exact number`}
+                >
+                  <Text style={styles.stepperValue}>{players}</Text>
+                </Pressable>
+              )}
+
               <Pressable
-                onPress={() => setPlayers((p) => Math.min(8, p + 1))}
+                onPress={() => {
+                  const next = Math.min(MAX_REASONABLE_PLAYERS, players + 1);
+                  setPlayers(next);
+                  setPlayersText(String(next));
+                }}
                 style={styles.stepperButton}
                 accessibilityRole="button"
                 accessibilityLabel="Increase player count"
@@ -604,35 +854,90 @@ export default function BookingScreen({
         <Text style={styles.sectionTitle}>
           {isOwner ? 'Upcoming Reservations' : 'My Reservations'}
         </Text>
-        {upcoming.length === 0 ? (
+        {upcomingGroups.length === 0 ? (
           <Text style={styles.emptyText}>
             {isOwner ? 'No upcoming reservations yet.' : "You haven't booked a court yet."}
           </Text>
         ) : (
-          upcoming.map((r) => (
-            <View key={r.id} style={styles.reservationCard}>
-              <View style={styles.reservationHeader}>
-                <Text style={styles.reservationName}>{r.customerName}</Text>
-                <PaidChip paid={r.isPaid} onPress={isOwner ? () => togglePaid(r) : undefined} />
+          upcomingGroups.map((g) => {
+            // Single-court booking — same layout as before.
+            if (g.items.length === 1) {
+              const r = g.items[0];
+              return (
+                <View key={g.key} style={styles.reservationCard}>
+                  <View style={styles.reservationHeader}>
+                    <Text style={styles.reservationName}>{r.customerName}</Text>
+                    <PaidChip paid={r.isPaid} onPress={isOwner ? () => togglePaid(r) : undefined} />
+                  </View>
+                  <Text style={styles.reservationDetail}>
+                    {r.court} · {formatFriendlyDate(r.date)}
+                  </Text>
+                  <Text style={styles.reservationDetail}>{slotLabelsForHours(r.hours).join(', ')}</Text>
+                  <Text style={styles.reservationDetail}>
+                    {r.players} player{r.players === 1 ? '' : 's'}
+                    {r.notes ? ` · ${r.notes}` : ''}
+                  </Text>
+                  <View style={styles.reservationFooter}>
+                    <Text style={styles.reservationTotal}>{formatCurrency(reservationTotal(r))}</Text>
+                    {canCancel(r) && (
+                      <Pressable onPress={() => deleteReservation(r)} accessibilityRole="button">
+                        <Text style={styles.cancelText}>Cancel</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              );
+            }
+
+            // Multiple courts booked by the same person on the same day —
+            // one card, one sub-row per court, instead of a separate card
+            // per court.
+            return (
+              <View key={g.key} style={styles.reservationCard}>
+                <View style={styles.reservationHeader}>
+                  <Text style={styles.reservationName}>{g.customerName}</Text>
+                  <Text style={styles.reservationDetail}>{formatFriendlyDate(g.date)}</Text>
+                </View>
+                {g.items.map((r, i) => (
+                  <View
+                    key={r.id}
+                    style={[
+                      styles.reservationSubRow,
+                      i < g.items.length - 1 && styles.reservationSubRowDivider,
+                    ]}
+                  >
+                    <View style={styles.reservationSubMain}>
+                      <View style={styles.reservationSubHeaderRow}>
+                        <Text style={styles.reservationCourtName}>{r.court}</Text>
+                        <PaidChip paid={r.isPaid} onPress={isOwner ? () => togglePaid(r) : undefined} />
+                      </View>
+                      <Text style={styles.reservationDetail}>{slotLabelsForHours(r.hours).join(', ')}</Text>
+                      <Text style={styles.reservationDetail}>
+                        {r.players} player{r.players === 1 ? '' : 's'}
+                        {r.notes ? ` · ${r.notes}` : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.reservationSubAside}>
+                      <Text style={styles.reservationTotal}>{formatCurrency(reservationTotal(r))}</Text>
+                      {canCancel(r) && (
+                        <Pressable
+                          onPress={() => deleteReservation(r)}
+                          accessibilityRole="button"
+                          style={{ marginTop: 6 }}
+                        >
+                          <Text style={styles.cancelText}>Cancel</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  </View>
+                ))}
+                <View style={styles.reservationFooter}>
+                  <Text style={styles.reservationDetail}>{g.items.length} courts</Text>
+                  <Text style={styles.reservationTotal}>{formatCurrency(g.total)}</Text>
+                </View>
               </View>
-              <Text style={styles.reservationDetail}>
-                {r.court} · {formatFriendlyDate(r.date)}
-              </Text>
-              <Text style={styles.reservationDetail}>{slotLabelsForHours(r.hours).join(', ')}</Text>
-              <Text style={styles.reservationDetail}>
-                {r.players} player{r.players === 1 ? '' : 's'}
-                {r.notes ? ` · ${r.notes}` : ''}
-              </Text>
-              <View style={styles.reservationFooter}>
-                <Text style={styles.reservationTotal}>{formatCurrency(reservationTotal(r))}</Text>
-                {canCancel(r) && (
-                  <Pressable onPress={() => deleteReservation(r)} accessibilityRole="button">
-                    <Text style={styles.cancelText}>Cancel</Text>
-                  </Pressable>
-                )}
-              </View>
-            </View>
-          ))
+            );
+          })
         )}
 
         {/* Venue info — amenities, contact, location */}
@@ -804,9 +1109,14 @@ const styles = StyleSheet.create({
   dateNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     marginHorizontal: 16,
     marginTop: 8,
+  },
+  dateNavSteppers: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   dateNavArrow: {
     width: 34,
@@ -820,6 +1130,16 @@ const styles = StyleSheet.create({
   },
   dateNavArrowDisabled: { opacity: 0.4 },
   dateNavArrowText: { fontSize: 18, fontWeight: 'bold', color: AppColors.forestGreen },
+  calendarButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 4,
+  },
+  calendarButtonText: { fontSize: 16 },
   dateNavLabel: {
     flex: 1,
     alignItems: 'center',
@@ -925,7 +1245,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#222',
   },
-  inputLocked: { backgroundColor: '#f0f0f0', color: '#555' },
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   stepperButton: {
     width: 36,
@@ -937,6 +1256,18 @@ const styles = StyleSheet.create({
   },
   stepperButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   stepperValue: { fontSize: 16, fontWeight: 'bold', color: '#222', minWidth: 24, textAlign: 'center' },
+  stepperInput: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#222',
+    minWidth: 48,
+    textAlign: 'center',
+    borderWidth: 1,
+    borderColor: AppColors.forestGreen,
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+  },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -976,6 +1307,24 @@ const styles = StyleSheet.create({
   },
   reservationName: { fontSize: 15, fontWeight: 'bold', color: '#222' },
   reservationDetail: { fontSize: 12.5, color: '#666', marginTop: 2 },
+  reservationSubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  reservationSubRowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  reservationSubMain: { flex: 1, paddingRight: 10 },
+  reservationSubAside: { alignItems: 'flex-end' },
+  reservationSubHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  reservationCourtName: { fontSize: 13.5, fontWeight: '700', color: '#222', marginRight: 8 },
   reservationFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',

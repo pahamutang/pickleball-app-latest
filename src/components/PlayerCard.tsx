@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   OrderItem,
@@ -7,12 +7,13 @@ import {
   grandTotal,
   isFullyPaid,
   isFullyUnpaid,
-  orderTotal,
+  ordersTotal,
   paymentStatus,
 } from '../types';
 import { AppColors } from '../colors';
 import { formatCurrency } from '../utils/currency';
 import PaidChip from './PaidChip';
+import OrdersModal from './OrdersModal';
 
 function statusColor(player: Player): string {
   if (isFullyPaid(player)) return AppColors.paidColor;
@@ -43,6 +44,7 @@ export default function PlayerCard({
   const due = amountDue(player);
   const fullyPaid = isFullyPaid(player);
   const fullyUnpaid = isFullyUnpaid(player);
+  const [ordersModalVisible, setOrdersModalVisible] = useState(false);
 
   return (
     <View style={styles.card}>
@@ -65,23 +67,17 @@ export default function PlayerCard({
       </View>
 
       {player.orders.length > 0 && (
-        <>
-          <Text style={styles.ordersLabel}>Orders:</Text>
-          {player.orders.map((o) => (
-            <View key={o.id} style={styles.orderRow}>
-              <Text style={styles.orderText} numberOfLines={1}>
-                {o.name} x{o.quantity} — {formatCurrency(orderTotal(o))}
-              </Text>
-              <PaidChip paid={o.isPaid} onPress={() => onToggleOrderPaid(o)} />
-              <Pressable onPress={() => onEditOrder(o)} hitSlop={8} style={styles.editOrderBtn}>
-                <Text style={styles.editOrderIcon}>✎</Text>
-              </Pressable>
-              <Pressable onPress={() => onRemoveOrder(o.id)} hitSlop={8} style={styles.removeOrderBtn}>
-                <Text style={styles.removeOrderIcon}>×</Text>
-              </Pressable>
-            </View>
-          ))}
-        </>
+        <Pressable
+          onPress={() => setOrdersModalVisible(true)}
+          style={styles.ordersSummaryRow}
+          accessibilityRole="button"
+          accessibilityLabel={`View ${player.name}'s orders`}
+        >
+          <Text style={styles.ordersLabel}>
+            Orders ({player.orders.length}) — {formatCurrency(ordersTotal(player))}
+          </Text>
+          <Text style={styles.ordersChevron}>›</Text>
+        </Pressable>
       )}
 
       <View style={styles.footerRow}>
@@ -103,6 +99,22 @@ export default function PlayerCard({
           </Text>
         </Pressable>
       )}
+
+      <OrdersModal
+        visible={ordersModalVisible}
+        onClose={() => setOrdersModalVisible(false)}
+        playerName={player.name}
+        orders={player.orders}
+        editable
+        onToggleOrderPaid={onToggleOrderPaid}
+        onEditOrder={(order) => {
+          // Close first so the edit modal (opened by the parent) isn't
+          // stacked underneath this one — cleaner on both platforms.
+          setOrdersModalVisible(false);
+          onEditOrder(order);
+        }}
+        onRemoveOrder={onRemoveOrder}
+      />
     </View>
   );
 }
@@ -137,18 +149,15 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: '#eee', marginVertical: 8 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   rowText: { flex: 1, fontSize: 14, color: '#222' },
-  ordersLabel: { marginTop: 6, fontWeight: '600', fontSize: 13, color: '#222' },
-  orderRow: {
+  ordersSummaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 8,
-    marginTop: 4,
+    justifyContent: 'space-between',
+    marginTop: 6,
+    paddingVertical: 4,
   },
-  orderText: { flex: 1, fontSize: 13, color: '#333' },
-  editOrderBtn: { paddingHorizontal: 6 },
-  editOrderIcon: { fontSize: 15, color: AppColors.forestGreen },
-  removeOrderBtn: { paddingHorizontal: 6 },
-  removeOrderIcon: { fontSize: 18, color: '#888' },
+  ordersLabel: { fontWeight: '600', fontSize: 13, color: '#222' },
+  ordersChevron: { fontSize: 18, color: '#999', fontWeight: 'bold' },
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

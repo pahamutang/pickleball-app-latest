@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Dimensions,
   FlatList,
   Image,
   ImageSourcePropType,
@@ -9,10 +8,10 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CAROUSEL_HEIGHT = 240;
 
 export default function VenuePhotoCarousel({
@@ -27,29 +26,52 @@ export default function VenuePhotoCarousel({
 }) {
   const [index, setIndex] = useState(0);
   const listRef = useRef<FlatList<ImageSourcePropType>>(null);
+  // Mirrors `index` without being a dependency itself, so the effect below
+  // can read the latest index without re-running every time the user
+  // swipes to a new page (see comment on that effect).
+  const indexRef = useRef(0);
+  useEffect(() => {
+    indexRef.current = index;
+  }, [index]);
+  // Read live, not just once at module load — a value captured at import
+  // time never updates, so rotating the device, resizing a split-screen/
+  // multi-window app, or unfolding a foldable left the carousel (and its
+  // paging math) sized for whatever width the app happened to launch at.
+  const { width: screenWidth } = useWindowDimensions();
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const i = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+    const i = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
     if (i !== index) setIndex(i);
   };
 
-  // The owner can add/remove photos while this carousel is on screen (see
-  // VenuePhotoManagerModal), which can shrink `photos` out from under
-  // whatever page is currently showing — e.g. viewing photo 4 of 5, then
-  // deleting down to 2. Without this, the counter/dots would keep
-  // pointing at an index that no longer exists. Snap back to the last
-  // photo (and scroll the list to match) whenever that happens.
+  // Single effect covering both triggers that need to re-align the list:
+  // the owner deleting photos out from under the current page (shrinking
+  // `photos.length`), and the width itself changing (rotation, split-
+  // screen resize, unfolding). Merged into one effect — rather than two
+  // separate ones keyed off different deps — so there's one source of
+  // truth for "where should the list be scrolled to", and no risk of a
+  // width-change effect re-scrolling to a since-clamped `index` from a
+  // stale closure when both happen in the same render pass.
+  //
+  // Deliberately NOT keyed on `index`: onScroll updates `index` on every
+  // user swipe, and if this effect re-ran on that too, it would call
+  // scrollToOffset mid-gesture and fight the user's own drag. It only
+  // needs to re-align on the two external triggers above; indexRef gives
+  // it the latest index without needing index as a dependency.
   useEffect(() => {
     if (photos.length === 0) return;
-    if (index > photos.length - 1) {
-      const clamped = photos.length - 1;
+    const current = indexRef.current;
+    const clamped = Math.min(current, photos.length - 1);
+    if (clamped !== current) {
+      indexRef.current = clamped;
       setIndex(clamped);
-      listRef.current?.scrollToOffset({ offset: clamped * SCREEN_WIDTH, animated: false });
     }
-  }, [photos.length, index]);
+    listRef.current?.scrollToOffset({ offset: clamped * screenWidth, animated: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos.length, screenWidth]);
 
   return (
-    <View style={styles.wrap}>
+    <View style={[styles.wrap, { width: screenWidth }]}>
       <FlatList
         ref={listRef}
         data={photos}
@@ -59,7 +81,9 @@ export default function VenuePhotoCarousel({
         onScroll={onScroll}
         scrollEventThrottle={16}
         keyExtractor={(_, i) => `venue-photo-${i}`}
-        renderItem={({ item }) => <Image source={item} style={styles.photo} resizeMode="cover" />}
+        renderItem={({ item }) => (
+          <Image source={item} style={[styles.photo, { width: screenWidth }]} resizeMode="cover" />
+        )}
       />
       <View style={styles.counterBadge}>
         <Text style={styles.counterText}>
@@ -86,8 +110,8 @@ export default function VenuePhotoCarousel({
 }
 
 const styles = StyleSheet.create({
-  wrap: { width: SCREEN_WIDTH, height: CAROUSEL_HEIGHT, backgroundColor: '#000' },
-  photo: { width: SCREEN_WIDTH, height: CAROUSEL_HEIGHT },
+  wrap: { height: CAROUSEL_HEIGHT, backgroundColor: '#000' },
+  photo: { height: CAROUSEL_HEIGHT },
   counterBadge: {
     position: 'absolute',
     right: 12,
