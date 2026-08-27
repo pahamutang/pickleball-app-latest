@@ -36,6 +36,8 @@ import { generateId } from '../types';
 import { formatCurrency } from '../utils/currency';
 import PaidChip from '../components/PaidChip';
 import VenuePhotoCarousel from '../components/VenuePhotoCarousel';
+import VenuePhotoManagerModal from '../components/VenuePhotoManagerModal';
+import { useVenuePhotos } from '../context/VenuePhotosContext';
 import VenueLocationCard from '../components/VenueLocationCard';
 import CancelReservationModal from '../components/CancelReservationModal';
 import AlertModal from '../components/AlertModal';
@@ -43,7 +45,10 @@ import ReservationConfirmedModal from '../components/ReservationConfirmedModal';
 
 const DATE_STRIP_DAYS = 14;
 
-const VENUE_PHOTOS = [
+// Shown until the owner has added any photos of their own via "Edit
+// Photos" (see VenuePhotoManagerModal) — bundled with the app so the
+// carousel never looks empty on a fresh install.
+const DEFAULT_VENUE_PHOTOS = [
   require('../../assets/venue/court_1.jpg'),
   require('../../assets/venue/court_2.jpg'),
   require('../../assets/venue/court_3.jpg'),
@@ -87,6 +92,11 @@ export default function BookingScreen({
   const { reservations, loading, addReservation, cancelReservation, setPaid } = useBooking();
   const { session, profile } = useAuth();
   const isOwner = profile?.role === 'owner';
+  const { photos: venuePhotos } = useVenuePhotos();
+  const carouselPhotos = venuePhotos.length
+    ? venuePhotos.map((p) => ({ uri: p.url }))
+    : DEFAULT_VENUE_PHOTOS;
+  const [showPhotoManager, setShowPhotoManager] = useState(false);
   const myName = profile?.display_name?.trim() || '';
 
   const dates = useMemo(() => nextDays(DATE_STRIP_DAYS), []);
@@ -94,8 +104,12 @@ export default function BookingScreen({
 
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [showDateStrip, setShowDateStrip] = useState(false);
-  const [selectedCourt, setSelectedCourt] = useState<string>(COURTS[0].name);
-  const [selectedHours, setSelectedHours] = useState<number[]>([]);
+  // Selected hours, keyed by court name — e.g. { 'Court 1': [7, 8], 'Court 3': [7] }.
+  // A court with no selection is either absent from this map or maps to [].
+  // This lets a single booking cover multiple courts at once (e.g. Court 1
+  // AND Court 3 for the same time slot), instead of being locked to one
+  // court like the old `selectedCourt` + `selectedHours` pair was.
+  const [selectedSlots, setSelectedSlots] = useState<Record<string, number[]>>({});
   // Players book under their own account name — locked, not free text —
   // so nobody can reserve a court "as" someone else. Owners keep the
   // free-text field since they're booking on behalf of walk-in customers.
@@ -107,7 +121,7 @@ export default function BookingScreen({
   // Dropping the date resets any in-progress slot selection — a selection
   // made for one date should never silently apply to another.
   useEffect(() => {
-    setSelectedHours([]);
+    setSelectedSlots({});
   }, [selectedDate]);
 
   const reservationsForDate = useMemo(
@@ -119,7 +133,7 @@ export default function BookingScreen({
     if (isPastSlot(selectedDate, hour)) return 'past';
     const match = reservationsForDate.find((r) => r.court === court.name && r.hours.includes(hour));
     if (match) return match.isPaid ? 'booked' : 'pending';
-    if (court.name === selectedCourt && selectedHours.includes(hour)) return 'selected';
+    if ((selectedSlots[court.name] ?? []).includes(hour)) return 'selected';
     return 'available';
   };
 
@@ -127,27 +141,37 @@ export default function BookingScreen({
     const status = cellStatus(court, hour);
     if (status === 'past' || status === 'booked' || status === 'pending') return;
 
-    if (status === 'selected') {
-      setSelectedHours((prev) => prev.filter((h) => h !== hour));
-      return;
-    }
-
-    // Picking a slot on a different court than what's currently selected
-    // starts a fresh selection on that court — one reservation is always
-    // for a single court.
-    if (court.name !== selectedCourt) {
-      setSelectedCourt(court.name);
-      setSelectedHours([hour]);
-      return;
-    }
-    setSelectedHours((prev) => [...prev, hour].sort((a, b) => a - b));
+    // Toggle this hour within *this court's own* selection only — every
+    // other court's selection is left untouched, so a player can select
+    // Court 1's 7-8 AM slot, then Court 2's and Court 3's 7-8 AM slots too,
+    // and book all three in one go.
+    setSelectedSlots((prev) => {
+      const current = prev[court.name] ?? [];
+      const next = current.includes(hour)
+        ? current.filter((h) => h !== hour)
+        : [...current, hour].sort((a, b) => a - b);
+      const updated = { ...prev, [court.name]: next };
+      if (next.length === 0) delete updated[court.name];
+      return updated;
+    });
   };
 
-  const activeCourt = courtByName(selectedCourt);
-  const total = selectedHours.reduce((sum, h) => sum + rateForSlot(activeCourt, h), 0);
+  // Courts that currently have at least one hour selected, in COURTS order
+  // (not object-key order, which isn't guaranteed to match the grid).
+  const activeCourtNames = COURTS.map((c) => c.name).filter(
+    (name) => (selectedSlots[name] ?? []).length > 0
+  );
+  const totalSelectedSlots = activeCourtNames.reduce(
+    (sum, name) => sum + selectedSlots[name].length,
+    0
+  );
+  const total = activeCourtNames.reduce((sum, name) => {
+    const court = courtByName(name);
+    return sum + selectedSlots[name].reduce((s, h) => s + rateForSlot(court, h), 0);
+  }, 0);
 
   const resetForm = () => {
-    setSelectedHours([]);
+    setSelectedSlots({});
     setCustomerName(isOwner ? '' : myName);
     setPlayers(2);
     setNotes('');
@@ -158,7 +182,7 @@ export default function BookingScreen({
     title: string;
     message: string;
   } | null>(null);
-  const [confirmedReservation, setConfirmedReservation] = useState<Reservation | null>(null);
+  const [confirmedReservations, setConfirmedReservations] = useState<Reservation[] | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const handleReserve = async () => {
@@ -179,7 +203,7 @@ export default function BookingScreen({
       });
       return;
     }
-    if (selectedHours.length === 0) {
+    if (activeCourtNames.length === 0) {
       setAlertState({
         variant: 'warning',
         title: 'Pick a time',
@@ -189,8 +213,12 @@ export default function BookingScreen({
     }
     // Re-check against the latest reservations right before saving, in case
     // something else got booked in the moments since the slots were picked.
-    const conflict = selectedHours.some((h) =>
-      reservationsForDate.some((r) => r.court === selectedCourt && r.hours.includes(h))
+    // Checked per-court, since each court now has its own independent
+    // selection of hours.
+    const conflict = activeCourtNames.some((courtName) =>
+      selectedSlots[courtName].some((h) =>
+        reservationsForDate.some((r) => r.court === courtName && r.hours.includes(h))
+      )
     );
     if (conflict) {
       setAlertState({
@@ -198,38 +226,55 @@ export default function BookingScreen({
         title: 'Slot no longer available',
         message: 'One of the selected time slots was just booked by someone else. Please choose another.',
       });
-      setSelectedHours([]);
+      setSelectedSlots({});
       return;
     }
 
-    const reservation: Reservation = {
+    // One reservation row per selected court (the backend model ties a
+    // reservation to a single court), but they're all created together as
+    // one booking action covering every court the player selected.
+    const newReservations: Reservation[] = activeCourtNames.map((courtName) => ({
       id: generateId(),
       customerName: trimmedName,
-      court: selectedCourt,
+      court: courtName,
       date: selectedDate,
-      hours: selectedHours,
+      hours: selectedSlots[courtName],
       players,
       notes: notes.trim(),
       isPaid: false,
       createdAt: Date.now(),
       createdBy: session.user.id,
-    };
+    }));
 
     setSubmitting(true);
-    const result = await addReservation(reservation);
-    setSubmitting(false);
+    const saved: Reservation[] = [];
+    let failure: string | undefined;
+    for (const reservation of newReservations) {
+      const result = await addReservation(reservation);
+      if (!result.ok) {
+        failure = result.error;
+        break;
+      }
+      saved.push(reservation);
+    }
 
-    if (!result.ok) {
+    if (failure) {
+      // Don't leave a half-booked state — if Court 1 saved but Court 2
+      // failed, undo Court 1 too, so the player either gets every court
+      // they asked for or none of them.
+      await Promise.all(saved.map((r) => cancelReservation(r.id)));
+      setSubmitting(false);
       setAlertState({
         variant: 'error',
         title: "Couldn't save reservation",
-        message: result.error ?? 'Please check your connection and try again.',
+        message: failure ?? 'Please check your connection and try again.',
       });
       return;
     }
 
+    setSubmitting(false);
     resetForm();
-    setConfirmedReservation(reservation);
+    setConfirmedReservations(newReservations);
   };
 
   // Only the owner can flip paid status — enforced here for the UI, and
@@ -325,17 +370,17 @@ export default function BookingScreen({
 
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         {/* Photo carousel — real shots of the courts, swipeable with a page counter */}
-        <VenuePhotoCarousel photos={VENUE_PHOTOS} />
+        <VenuePhotoCarousel
+          photos={carouselPhotos}
+          onManagePress={isOwner ? () => setShowPhotoManager(true) : undefined}
+        />
 
-        {/* Venue header — name, location, starting price, like a venue card */}
+        {/* Venue header — name, location, like a venue card */}
         <View style={styles.venueCard}>
           <Image source={require('../../assets/mt_pickle_logo.jpg')} style={styles.venuePhoto} />
           <View style={{ flex: 1 }}>
             <Text style={styles.venueName}>Mt Pickle Park</Text>
             <Text style={styles.venueLocation}>📍 {CONTACT.address}</Text>
-            <Text style={styles.venueFrom}>
-              From {formatCurrency(Math.min(...RATE_TIERS.map((t) => t.outdoorRate)))}/hr
-            </Text>
           </View>
         </View>
 
@@ -427,7 +472,7 @@ export default function BookingScreen({
                 key={c.name}
                 style={[
                   styles.courtHeaderCell,
-                  c.name === selectedCourt && selectedHours.length > 0 && styles.courtHeaderCellActive,
+                  (selectedSlots[c.name] ?? []).length > 0 && styles.courtHeaderCellActive,
                 ]}
               >
                 <Text style={styles.courtHeaderName}>{c.name}</Text>
@@ -478,13 +523,19 @@ export default function BookingScreen({
           <LegendDot color="#F0F0F0" label="Unavailable" />
         </View>
 
-        {/* Booking summary — appears once at least one slot is selected */}
-        {selectedHours.length > 0 && (
+        {/* Booking summary — appears once at least one slot is selected on
+            any court. Lists every selected court separately since each one
+            can have its own set of hours. */}
+        {activeCourtNames.length > 0 && (
           <View style={styles.summaryCard}>
             <Text style={styles.summaryTitle}>
-              {selectedCourt} · {formatFriendlyDate(selectedDate)}
+              {activeCourtNames.join(', ')} · {formatFriendlyDate(selectedDate)}
             </Text>
-            <Text style={styles.summarySlots}>{slotLabelsForHours(selectedHours).join(', ')}</Text>
+            {activeCourtNames.map((courtName) => (
+              <Text key={courtName} style={styles.summarySlots}>
+                {courtName}: {slotLabelsForHours(selectedSlots[courtName]).join(', ')}
+              </Text>
+            ))}
 
             <Text style={styles.label}>{isOwner ? 'Customer name' : 'Booking under'}</Text>
             <TextInput
@@ -528,7 +579,8 @@ export default function BookingScreen({
 
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>
-                {selectedHours.length} slot{selectedHours.length === 1 ? '' : 's'} selected
+                {totalSelectedSlots} slot{totalSelectedSlots === 1 ? '' : 's'} selected
+                {activeCourtNames.length > 1 ? ` across ${activeCourtNames.length} courts` : ''}
               </Text>
               <Text style={styles.totalValue}>{formatCurrency(total)}</Text>
             </View>
@@ -621,8 +673,8 @@ export default function BookingScreen({
       />
 
       <ReservationConfirmedModal
-        reservation={confirmedReservation}
-        onClose={() => setConfirmedReservation(null)}
+        reservations={confirmedReservations}
+        onClose={() => setConfirmedReservations(null)}
       />
 
       <AlertModal
@@ -632,6 +684,13 @@ export default function BookingScreen({
         message={alertState?.message ?? ''}
         onClose={() => setAlertState(null)}
       />
+
+      {isOwner && (
+        <VenuePhotoManagerModal
+          visible={showPhotoManager}
+          onClose={() => setShowPhotoManager(false)}
+        />
+      )}
     </View>
   );
 }

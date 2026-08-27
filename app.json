@@ -22,7 +22,13 @@
     },
     "owner": "daven2002",
     "plugins": [
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Mt Pickle Park to access your photos so the owner can update the venue photo carousel."
+        }
+      ]
     ],
     "extra": {
       "eas": {

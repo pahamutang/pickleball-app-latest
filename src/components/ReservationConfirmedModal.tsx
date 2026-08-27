@@ -7,36 +7,56 @@ import { formatCurrency } from '../utils/currency';
 // Themed replacement for the old Alert.alert('Reservation confirmed', ...)
 // popup — shows the same info (who/what/when/total) as a proper summary
 // card instead of a plain system alert with a wall of text.
+//
+// Takes an *array* of reservations rather than one, since a single booking
+// action can now cover multiple courts at once (one Reservation row per
+// court under the hood) — each shows as its own line, with one combined
+// total at the bottom.
 export default function ReservationConfirmedModal({
-  reservation,
+  reservations,
   onClose,
 }: {
-  reservation: Reservation | null;
+  reservations: Reservation[] | null;
   onClose: () => void;
 }) {
+  const list = reservations ?? [];
+  const grandTotal = list.reduce((sum, r) => sum + reservationTotal(r), 0);
+  const multi = list.length > 1;
+
   return (
-    <Modal visible={!!reservation} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={list.length > 0} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={styles.dialog}>
           <View style={styles.iconBadge}>
             <Text style={styles.iconText}>✅</Text>
           </View>
 
-          <Text style={styles.title}>Reservation confirmed</Text>
+          <Text style={styles.title}>
+            {multi ? `${list.length} courts reserved` : 'Reservation confirmed'}
+          </Text>
 
-          {reservation && (
+          {list.length > 0 && (
             <View style={styles.summaryCard}>
-              <Text style={styles.customerName}>{reservation.customerName}</Text>
-              <Text style={styles.detailLine}>
-                {reservation.court} · {formatFriendlyDate(reservation.date)}
-              </Text>
-              <Text style={styles.detailLine}>{slotLabelsForHours(reservation.hours).join(', ')}</Text>
+              <Text style={styles.customerName}>{list[0].customerName}</Text>
+              <Text style={styles.detailLine}>{formatFriendlyDate(list[0].date)}</Text>
+
+              {list.map((reservation, i) => (
+                <View key={reservation.id} style={i > 0 ? styles.courtBlock : undefined}>
+                  <Text style={styles.detailLineStrong}>{reservation.court}</Text>
+                  <Text style={styles.detailLine}>{slotLabelsForHours(reservation.hours).join(', ')}</Text>
+                  {multi && (
+                    <Text style={styles.detailLineSubtotal}>
+                      {formatCurrency(reservationTotal(reservation))}
+                    </Text>
+                  )}
+                </View>
+              ))}
 
               <View style={styles.divider} />
 
               <View style={styles.totalRow}>
                 <Text style={styles.totalLabel}>Total</Text>
-                <Text style={styles.totalValue}>{formatCurrency(reservationTotal(reservation))}</Text>
+                <Text style={styles.totalValue}>{formatCurrency(grandTotal)}</Text>
               </View>
             </View>
           )}
@@ -95,6 +115,9 @@ const styles = StyleSheet.create({
   },
   customerName: { fontSize: 15, fontWeight: '700', color: '#1a1a1a' },
   detailLine: { fontSize: 13, color: '#555', marginTop: 4 },
+  detailLineStrong: { fontSize: 13, color: '#1a1a1a', fontWeight: '700', marginTop: 10 },
+  detailLineSubtotal: { fontSize: 12, color: '#888', marginTop: 2 },
+  courtBlock: { marginTop: 2 },
   divider: { height: 1, backgroundColor: '#e6e6e0', marginTop: 12, marginBottom: 10 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontSize: 13, color: '#666', fontWeight: '600' },

@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { PaymentLogProvider } from './src/context/PaymentLogContext';
 import { PlayersProvider } from './src/context/PlayersContext';
 import { BookingProvider } from './src/context/BookingContext';
+import { VenuePhotosProvider } from './src/context/VenuePhotosContext';
 import { supabase } from './src/services/supabaseClient';
 import BookingScreen from './src/screens/BookingScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -31,6 +32,7 @@ function OwnerApp() {
     <PaymentLogProvider>
       <PlayersProvider>
         <BookingProvider>
+          <VenuePhotosProvider>
           {mainTab === 'booking' && (
             <BookingScreen onOpenLegacy={() => setMainTab('legacy')} />
           )}
@@ -50,6 +52,7 @@ function OwnerApp() {
           {mainTab === 'legacy' && legacyScreen === 'history' && (
             <PaymentHistoryScreen onDone={() => setLegacyScreen('home')} />
           )}
+          </VenuePhotosProvider>
         </BookingProvider>
       </PlayersProvider>
     </PaymentLogProvider>
@@ -111,11 +114,13 @@ function PlayerApp() {
 
   return (
     <BookingProvider>
-      {tab === 'booking' ? (
-        <BookingScreen onOpenBill={() => setTab('bill')} />
-      ) : (
-        <MyBillScreen onBack={() => setTab('booking')} />
-      )}
+      <VenuePhotosProvider>
+        {tab === 'booking' ? (
+          <BookingScreen onOpenBill={() => setTab('bill')} />
+        ) : (
+          <MyBillScreen onBack={() => setTab('booking')} />
+        )}
+      </VenuePhotosProvider>
     </BookingProvider>
   );
 }

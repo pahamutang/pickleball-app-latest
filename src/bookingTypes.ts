@@ -19,9 +19,8 @@ export const COURTS: Court[] = [
 
 // Time-of-day rate tiers. Flat rate per tier — same price for indoor and
 // outdoor courts. `startHour`/`endHour` also define which hours are
-// actually bookable (see TIME_SLOTS below): there's a deliberate 1-hour
-// gap between DAY and NIGHT (4-5 PM) that isn't part of either tier and
-// isn't offered as a bookable slot.
+// actually bookable (see TIME_SLOTS below): DAY/AFTERNOON and NIGHT are
+// now back-to-back (7 AM-5 PM, then 5 PM-11 PM) with no gap between them.
 export interface RateTier {
   label: string;
   startHour: number; // inclusive, 24h
@@ -31,7 +30,7 @@ export interface RateTier {
 }
 
 export const RATE_TIERS: RateTier[] = [
-  { label: 'DAY', startHour: 7, endHour: 16, indoorRate: 200, outdoorRate: 200 },
+  { label: 'DAY/AFTERNOON', startHour: 7, endHour: 17, indoorRate: 200, outdoorRate: 200 },
   { label: 'NIGHT', startHour: 17, endHour: 23, indoorRate: 250, outdoorRate: 250 },
 ];
 
@@ -57,9 +56,10 @@ export interface TimeSlot {
 }
 
 // Groups slots for the availability grid's section headers. With the
-// current bookable hours (7 AM-4 PM, 5 PM-11 PM) this sorts out to:
-// Morning = 7-11 AM, Afternoon = 12-3 PM (last slot ends 4 PM), Evening =
-// 5-10 PM (last slot ends 11 PM) — matching the DAY/NIGHT rate windows.
+// current bookable hours (7 AM-5 PM, 5 PM-11 PM, no gap) this sorts out
+// to: Morning = 7-11 AM, Afternoon = 12-4 PM (last slot ends 5 PM),
+// Evening = 5-10 PM (last slot ends 11 PM) — matching the
+// DAY/AFTERNOON vs NIGHT rate windows.
 function sectionForHour(hour: number): SlotSection {
   if (hour < 12) return 'Morning';
   if (hour < 17) return 'Afternoon';
@@ -80,11 +80,14 @@ function formatSlotLabel(hour24: number): string {
   return `${startH} ${startAmpm}-${endH} ${endAmpm}`;
 }
 
-// Bookable hours: 7 AM-4 PM (DAY) and 5 PM-11 PM (NIGHT), with a 1-hour
-// gap at 4-5 PM that's intentionally not offered as a slot. Same window
-// every day — this list isn't date-specific, so it applies identically
-// to every date the booking screen shows.
-const BOOKABLE_HOURS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22];
+// Bookable hours: 7 AM-5 PM (DAY/AFTERNOON) straight through to 11 PM
+// (NIGHT) — no gap. The old version stopped DAY at 4 PM and started NIGHT
+// at 5 PM, which silently dropped the 4-5 PM hour from ever being
+// bookable at all; that's fixed by including hour 16 (4-5 PM) below, and
+// the DAY/AFTERNOON tier above now covers it (endHour: 17). Same window
+// every day — this list isn't date-specific, so it applies identically to
+// every date the booking screen shows.
+const BOOKABLE_HOURS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
 export const TIME_SLOTS: TimeSlot[] = BOOKABLE_HOURS.map((hour) => ({
   label: formatSlotLabel(hour),
@@ -186,5 +189,12 @@ export function formatFriendlyDate(iso: string): string {
 export function isPastSlot(dateIso: string, hour: number): boolean {
   const now = new Date();
   if (dateIso !== todayIso()) return dateIso < todayIso();
-  return hour <= now.getHours();
+  // A slot like `hour = 10` covers the 10:00-10:59 window, so it should
+  // stay bookable for the entire hour it represents, and only become past
+  // once the clock actually moves into the *next* hour. Using `<=` here
+  // (the old bug) flipped the slot to "past" the instant the clock hit its
+  // start hour — so the 10-11 AM slot vanished right at 10:00 AM, an hour
+  // before it should have, while 11-12 PM incorrectly showed as the
+  // earliest bookable slot.
+  return hour < now.getHours();
 }
