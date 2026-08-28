@@ -12,3 +12,4 @@ ios/build/
 *.keystore
 !debug.keystore
 .claude/
+.expo/
