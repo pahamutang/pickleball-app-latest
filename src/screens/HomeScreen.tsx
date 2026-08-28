@@ -516,7 +516,7 @@ export default function HomeScreen({
   const addOrderPlayer = players.find((p) => p.id === addOrderPlayerId) ?? null;
   const paymentPlayer = players.find((p) => p.id === paymentPlayerId) ?? null;
 
-  // Both contexts read from AsyncStorage on mount — without this, the list
+  // Both contexts read from Supabase on mount — without this, the list
   // would briefly render "No players yet" before the real data pops in,
   // looking like the session got wiped.
   if (playersLoading || paymentLogLoading) {

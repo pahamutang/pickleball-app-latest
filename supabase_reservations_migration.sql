@@ -23,6 +23,7 @@ alter table public.reservations enable row level security;
 
 -- Everyone signed in can see the availability grid (who booked what,
 -- when) — needed so players can tell which slots are free.
+drop policy if exists "reservations_select_all" on public.reservations;
 create policy "reservations_select_all"
   on public.reservations for select
   to authenticated
@@ -31,6 +32,7 @@ create policy "reservations_select_all"
 -- A signed-in user (owner or player) can create a reservation, but only
 -- ever as themselves — the client can't insert a booking "as" someone
 -- else's account.
+drop policy if exists "reservations_insert_own" on public.reservations;
 create policy "reservations_insert_own"
   on public.reservations for insert
   to authenticated
@@ -38,6 +40,7 @@ create policy "reservations_insert_own"
 
 -- Only the owner can edit an existing reservation (e.g. mark it paid,
 -- change slots on someone's behalf).
+drop policy if exists "reservations_update_owner_only" on public.reservations;
 create policy "reservations_update_owner_only"
   on public.reservations for update
   to authenticated
@@ -52,6 +55,7 @@ create policy "reservations_update_owner_only"
 
 -- Cancelling: the owner can cancel anything; a player can only cancel a
 -- reservation they created themselves.
+drop policy if exists "reservations_delete_owner_or_own" on public.reservations;
 create policy "reservations_delete_owner_or_own"
   on public.reservations for delete
   to authenticated
@@ -64,5 +68,17 @@ create policy "reservations_delete_owner_or_own"
   );
 
 -- Let the app subscribe to live changes (new bookings, cancellations,
--- paid-status flips) the same way it already does for `players`.
-alter publication supabase_realtime add table public.reservations;
+-- paid-status flips) the same way it already does for `players`. Guarded
+-- so re-running this script doesn't also fail here with "relation is
+-- already member of publication" once it's been added once.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'reservations'
+  ) then
+    alter publication supabase_realtime add table public.reservations;
+  end if;
+end $$;

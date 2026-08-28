@@ -165,6 +165,18 @@ export default function AddPlayerModal({
             onChangeText={(text) => {
               setName(text);
               if (nameError) setNameError(null);
+              // If a linked account was selected and the name is then
+              // edited away from that account's display name, this is no
+              // longer that account's booking — drop the link so it can't
+              // submit under a stranger's account id (which would show
+              // this walk-in's bill, and let it be marked paid, on that
+              // stranger's own phone).
+              if (linkedUserId) {
+                const linkedAccount = accounts.find((a) => a.id === linkedUserId);
+                if (!linkedAccount || linkedAccount.displayName !== text) {
+                  setLinkedUserId(undefined);
+                }
+              }
             }}
             autoFocus
             placeholder="e.g. Juan"

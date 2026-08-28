@@ -118,7 +118,10 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
   // Wipes the log in Supabase and starts a fresh 24h window from now.
   const resetNow = useCallback(() => {
     (async () => {
-      await supabase.from('payments').delete().not('id', 'is', null);
+      const { error } = await supabase.from('payments').delete().not('id', 'is', null);
+      if (error) {
+        console.warn('Failed to clear payment history', error);
+      }
     })();
     persistAnchor(Date.now());
   }, [persistAnchor]);

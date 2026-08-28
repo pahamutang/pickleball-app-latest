@@ -6,6 +6,7 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { supabase } from '../services/supabaseClient';
 import { uploadVenuePhotoFile, deleteVenuePhotoFile } from '../services/venuePhotoStorage';
 import { nextExtraPosition } from '../utils/venueSlides';
@@ -130,8 +131,16 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'venue_photos' }, fetchAll)
       .subscribe();
 
+    // Same gap as BookingContext had — a backgrounded app can silently
+    // drop its realtime connection, so refetch on foreground to catch
+    // anything missed while away.
+    const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') fetchAll();
+    });
+
     return () => {
       supabase.removeChannel(channel);
+      appStateSub.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -21,7 +21,7 @@ roles:
 
 - **Owner** — full access: booking, the session tracker, adding players,
   logging orders, marking things paid. Becomes the owner by entering the
-  secret PIN (set in `supabase_migration.sql`) at sign-up.
+  secret PIN (set in `supabase_owner_role_migration.sql`) at sign-up.
 - **Player** — read-only. After signing up, they add themselves to the
   session with just their name (`JoinSessionScreen.tsx`) — no code, no
   owner involvement. From then on they see their own orders and bill
@@ -30,7 +30,7 @@ roles:
 
 Setup:
 1. Create a free Supabase project.
-2. Run `supabase_migration.sql` in the SQL Editor (edit the owner PIN near
+2. Run `supabase_owner_role_migration.sql` in the SQL Editor (edit the owner PIN near
    the top first).
 3. Copy the Project URL + "Publishable"/anon key into `.env` (see
    `.env` in this repo for the expected variable names).
@@ -38,10 +38,10 @@ Setup:
    `react-native-url-polyfill`.
 
 Data no longer lives only in `AsyncStorage` — `players`, `order_items`,
-and `payments` are synced from Supabase in real time. `reservations`
-(the Court Reservation module) is still local-only/owner-side for now.
+`payments`, and `reservations` (the Court Reservation module) are all
+synced from Supabase in real time, the same way, across every device.
 
-## Email sending (no sign-in)
+## Email sending (no backend, no sign-in)
 
 Earlier versions of this app had each user sign into their own Gmail
 account with Google OAuth and send through the Gmail API. That's gone now
@@ -49,11 +49,13 @@ account with Google OAuth and send through the Gmail API. That's gone now
 redirects don't work in plain Expo Go), which was more setup than this
 needed.
 
-Instead: there's **one fixed Gmail account** on the backend. The app just
-asks for the recipient's email address (typed in, same as before) and
-POSTs the receipt to the backend, which sends it via that one account
-using a Gmail **App Password**. No sign-in screen, no OAuth, no token
-refresh, works fine in plain Expo Go.
+There is no backend and no server-side email account. `emailService.ts`
+just opens the device's own mail app (Gmail's compose screen on Android,
+the native Mail app / `expo-mail-composer` on iOS) pre-filled with the
+receipt, addressed to whatever recipient email the user types in (e.g.
+into a "session owner email" field in Settings). The user reviews it in
+their own mail app and hits send themselves — no sign-in screen, no
+OAuth, no API key, no token refresh, and it works fine in plain Expo Go.
 
 ## Project structure
 
@@ -69,9 +71,13 @@ pickleball-app/
     colors.ts                    brand palette
     types.ts                     Player / OrderItem + derived getters (session tracker)
     bookingTypes.ts               Reservation type + court/date/time-slot helpers (booking)
-    context/PaymentLogContext.tsx
-    context/BookingContext.tsx    AsyncStorage-persisted reservations list
-    services/emailService.ts     builds + sends the receipt via the backend
+    context/PaymentLogContext.tsx Supabase-synced payment log
+    context/BookingContext.tsx    Supabase-synced reservations list
+    context/PlayersContext.tsx    Supabase-synced players/orders (session tracker)
+    context/VenuePhotosContext.tsx  Supabase-synced venue photo carousel
+    context/AccountNotificationsContext.tsx
+    context/AuthContext.tsx
+    services/emailService.ts     builds the receipt and opens the device's mail app
     services/settingsService.ts  AsyncStorage for session title/owner email
     utils/currency.ts            ₱ formatting, date formatting
     components/                  PlayerCard, PaidChip, and the 3 modals
@@ -96,37 +102,7 @@ npx expo start
 
 Scan the QR code with the Expo Go app on your phone.
 
-## 2. Set up the backend
-
-See `../pickleball-backend/README.md`. In short:
-
-```
-cd pickleball-backend
-npm install
-cp .env.example .env
-# fill in APP_API_KEY, GMAIL_USER, GMAIL_APP_PASSWORD in .env
-npm start
-```
-
-For the Gmail account you use as `GMAIL_USER`:
-1. Turn on 2-Step Verification (Google Account → Security).
-2. Google Account → Security → App Passwords → generate one for "Mail".
-3. Paste that 16-character password into `.env` as `GMAIL_APP_PASSWORD`.
-
-While testing locally, expose it with ngrok (`ngrok http 3000`) and use
-that `https://...ngrok...` URL as `BACKEND_URL`. For the real APK, deploy
-the backend to Render/Railway/Fly.io instead so it has a stable URL.
-
-## 3. Point the app at the backend
-
-In `src/services/emailService.ts`:
-
-```ts
-const BACKEND_URL = 'https://your-backend-url';
-const BACKEND_API_KEY = 'same value as APP_API_KEY in the backend .env';
-```
-
-## 4. Build the APK — on GitHub, not locally
+## 2. Build the APK — on GitHub, not locally
 
 This repo includes `.github/workflows/eas-build.yml`, which triggers a
 cloud build on Expo's EAS servers straight from GitHub — no `expo start`,
@@ -161,15 +137,11 @@ npx eas-cli build -p android --profile preview
 
 ## Notes
 
-- **Session data (players/orders) is in-memory only** — closing the app
-  clears the current session.
-- Every receipt is sent **from** the one fixed Gmail account, **to**
-  whatever address the user types in (e.g. into a "session owner email"
-  field in Settings). Nothing about the recipient needs to sign in or
-  authorize anything.
-- Gmail App Passwords are fine for this volume of sending. If you ever
-  send a lot of email or need better deliverability, a transactional
-  email service (Resend, SendGrid, Postmark) is a more durable long-term
-  choice — not something you need to worry about now.
+- Session data (players/orders/payments/reservations) lives in Supabase
+  and syncs live across devices — closing the app does not clear it.
+- Each receipt is composed **in the device's own mail app**, addressed to
+  whatever email the user types in (e.g. into a "session owner email"
+  field in Settings), and sent from whichever account is signed into that
+  app. Nothing about the recipient needs to sign in or authorize anything.
 - Currency is peso (₱) formatting, done manually in `utils/currency.ts`
   rather than via `Intl`, to avoid relying on the device's ICU data.

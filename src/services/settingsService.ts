@@ -2,8 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Stores the owner email / session title on-device so the user only has
 // to type them in once. Unlike the old Flutter version, there's no app
-// password to store — Gmail sign-in (see AuthContext) handles auth, and
-// nothing sensitive is persisted here.
+// password to store — email/password auth via Supabase (see AuthContext)
+// handles auth, and nothing sensitive is persisted here.
 const K_OWNER_EMAIL = 'owner_email';
 const K_SESSION_TITLE = 'session_title';
 

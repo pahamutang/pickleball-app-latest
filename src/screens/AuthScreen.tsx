@@ -25,6 +25,7 @@ export default function AuthScreen() {
   const [displayName, setDisplayName] = useState('');
   const [showOwnerPin, setShowOwnerPin] = useState(false);
   const [ownerPin, setOwnerPin] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -48,9 +49,6 @@ export default function AuthScreen() {
       }
 
       if (mode === 'signUp' && showOwnerPin && ownerPin.trim()) {
-        // Small delay so the freshly-created profile row exists before we
-        // try to update it.
-        await new Promise((r) => setTimeout(r, 500));
         const ok = await claimOwnerRole(ownerPin.trim());
         if (!ok) {
           setError('Account created, but that owner PIN was incorrect. You were signed up as a player.');
@@ -97,13 +95,21 @@ export default function AuthScreen() {
           />
 
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            placeholder="At least 6 characters"
-            secureTextEntry
-          />
+          <View style={styles.passwordRow} collapsable={false}>
+            <TextInput
+              style={[styles.input, styles.passwordInput]}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="At least 6 characters"
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoComplete="off"
+              importantForAutofill="no"
+            />
+            <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.showPasswordBtn}>
+              <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
+            </Pressable>
+          </View>
 
           {mode === 'signUp' && (
             <>
@@ -170,6 +176,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
+  },
+  passwordRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    borderWidth: 0,
+  },
+  showPasswordBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  showPasswordText: {
+    color: AppColors.forestGreen,
+    fontSize: 13,
+    fontWeight: '600',
   },
   ownerToggle: { marginTop: 14 },
   ownerToggleText: { color: AppColors.forestGreen, fontWeight: '600', fontSize: 13 },

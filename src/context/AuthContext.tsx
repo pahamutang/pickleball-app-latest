@@ -95,12 +95,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.warn('claim_owner_role failed', error);
         return false;
       }
-      if (data === true && session) {
-        await loadProfile(session.user.id);
+      if (data === true) {
+        // Don't use the `session` captured in this callback's closure —
+        // this is very often called immediately after signUp(), and this
+        // closure can still be holding the pre-signup snapshot (`session`
+        // was null when it was created), which silently skipped the
+        // profile reload below and left the UI showing the player screens
+        // until the next app launch, even though the database's role had
+        // already been updated correctly. Ask Supabase for the session
+        // fresh instead — we know one exists, since the RPC call above
+        // only succeeds when authenticated.
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData.session) {
+          await loadProfile(sessionData.session.user.id);
+        }
       }
       return data === true;
     },
-    [session, loadProfile]
+    [loadProfile]
   );
 
   const refreshProfile = useCallback(async () => {
