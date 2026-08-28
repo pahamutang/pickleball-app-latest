@@ -26,6 +26,11 @@ export default function AuthScreen() {
   const [showOwnerPin, setShowOwnerPin] = useState(false);
   const [ownerPin, setOwnerPin] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  // Whether the PIN's own characters are currently masked — distinct from
+  // `showOwnerPin` above, which only controls whether the PIN section is
+  // expanded at all. Mirrors the password field's show/hide toggle so a
+  // typo'd PIN can be checked the same way a typo'd password can.
+  const [pinVisible, setPinVisible] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -104,7 +109,6 @@ export default function AuthScreen() {
               secureTextEntry={!showPassword}
               autoCapitalize="none"
               autoComplete="off"
-              importantForAutofill="no"
             />
             <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.showPasswordBtn}>
               <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
@@ -119,13 +123,19 @@ export default function AuthScreen() {
                 </Text>
               </Pressable>
               {showOwnerPin && (
-                <TextInput
-                  style={styles.input}
-                  value={ownerPin}
-                  onChangeText={setOwnerPin}
-                  placeholder="Owner PIN"
-                  secureTextEntry
-                />
+                <View style={styles.passwordRow} collapsable={false}>
+                  <TextInput
+                    style={[styles.input, styles.passwordInput]}
+                    value={ownerPin}
+                    onChangeText={setOwnerPin}
+                    placeholder="Owner PIN"
+                    secureTextEntry={!pinVisible}
+                    autoComplete="off"
+                  />
+                  <Pressable onPress={() => setPinVisible((v) => !v)} style={styles.showPasswordBtn}>
+                    <Text style={styles.showPasswordText}>{pinVisible ? 'Hide' : 'Show'}</Text>
+                  </Pressable>
+                </View>
               )}
             </>
           )}
