@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, AppStateStatus, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AppColors } from '../colors';
 import { formatCurrency } from '../utils/currency';
 import { supabase } from '../services/supabaseClient';
@@ -104,8 +104,20 @@ export default function MyBillScreen({
       .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, fetchMine)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchMine)
       .subscribe();
+
+    // Same gap as BookingContext had: without this, a player who had the
+    // app merely backgrounded (not force-quit) while the owner added an
+    // order or marked something paid would only see it once they happen
+    // to be foregrounded at the same live moment. Re-fetch on every
+    // foreground transition so opening the bill later always reflects
+    // what's actually in the database.
+    const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') fetchMine();
+    });
+
     return () => {
       supabase.removeChannel(channel);
+      appStateSub.remove();
     };
   }, [fetchMine]);
 

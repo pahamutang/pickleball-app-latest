@@ -6,6 +6,7 @@ import { PaymentLogProvider } from './src/context/PaymentLogContext';
 import { PlayersProvider } from './src/context/PlayersContext';
 import { BookingProvider } from './src/context/BookingContext';
 import { VenuePhotosProvider } from './src/context/VenuePhotosContext';
+import { AccountNotificationsProvider } from './src/context/AccountNotificationsContext';
 import { supabase } from './src/services/supabaseClient';
 import BookingScreen from './src/screens/BookingScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -14,6 +15,7 @@ import PaymentHistoryScreen from './src/screens/PaymentHistoryScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import JoinSessionScreen from './src/screens/JoinSessionScreen';
 import MyBillScreen from './src/screens/MyBillScreen';
+import NewAccountToast from './src/components/NewAccountToast';
 import { AppColors } from './src/colors';
 
 type MainTab = 'booking' | 'legacy';
@@ -33,25 +35,35 @@ function OwnerApp() {
       <PlayersProvider>
         <BookingProvider>
           <VenuePhotosProvider>
-          {mainTab === 'booking' && (
-            <BookingScreen onOpenLegacy={() => setMainTab('legacy')} />
-          )}
+            {/* Only ever mounted here — new-account badge/toast only exist
+                for the owner, and only while the owner's app is actually
+                open (mounting/unmounting this provider is what turns the
+                realtime subscription behind it on and off). */}
+            <AccountNotificationsProvider>
+              <View style={styles.ownerAppRoot}>
+                {mainTab === 'booking' && (
+                  <BookingScreen onOpenLegacy={() => setMainTab('legacy')} />
+                )}
 
-          {mainTab === 'legacy' && legacyScreen === 'home' && (
-            <HomeScreen
-              onOpenSettings={() => setLegacyScreen('settings')}
-              onOpenHistory={() => setLegacyScreen('history')}
-              onOpenBooking={() => setMainTab('booking')}
-            />
-          )}
+                {mainTab === 'legacy' && legacyScreen === 'home' && (
+                  <HomeScreen
+                    onOpenSettings={() => setLegacyScreen('settings')}
+                    onOpenHistory={() => setLegacyScreen('history')}
+                    onOpenBooking={() => setMainTab('booking')}
+                  />
+                )}
 
-          {mainTab === 'legacy' && legacyScreen === 'settings' && (
-            <SettingsScreen onDone={() => setLegacyScreen('home')} />
-          )}
+                {mainTab === 'legacy' && legacyScreen === 'settings' && (
+                  <SettingsScreen onDone={() => setLegacyScreen('home')} />
+                )}
 
-          {mainTab === 'legacy' && legacyScreen === 'history' && (
-            <PaymentHistoryScreen onDone={() => setLegacyScreen('home')} />
-          )}
+                {mainTab === 'legacy' && legacyScreen === 'history' && (
+                  <PaymentHistoryScreen onDone={() => setLegacyScreen('home')} />
+                )}
+
+                <NewAccountToast />
+              </View>
+            </AccountNotificationsProvider>
           </VenuePhotosProvider>
         </BookingProvider>
       </PlayersProvider>
@@ -168,6 +180,7 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppColors.forestGreen },
+  ownerAppRoot: { flex: 1 },
   loadingContainer: {
     flex: 1,
     alignItems: 'center',

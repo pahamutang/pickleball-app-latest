@@ -7,13 +7,18 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { supabase } from '../services/supabaseClient';
 import { Reservation } from '../bookingTypes';
 import { useAuth } from './AuthContext';
 
 // Reservations are a shared Supabase table (see
-// supabase_reservations_migration.sql) — the same row set is visible to
-// the owner and to every player, kept live via realtime subscriptions.
+// supabase_reservations_migration.sql) — the same row set is visible in
+// full (including customer name and notes) to the owner AND every
+// player — see supabase_reservation_full_visibility_migration.sql.
+// Editing is what stays restricted: only the owner, or whoever created a
+// given row, can cancel it or mark it paid — everyone else can look but
+// not touch (enforced both in the UI and again server-side by RLS).
 //
 // Unlike the old AsyncStorage version (or a naive "optimistic setState +
 // push to DB in the background" version), every mutation here is a
@@ -55,11 +60,12 @@ export interface BookedSlot {
 
 interface BookingContextValue {
   // Full reservation rows — every column, including customer_name and
-  // notes. For the owner this is every reservation in the park (that's
-  // their job). For a player this is now ONLY the reservations THEY
-  // created — see supabase_reservation_privacy_fix_migration.sql. It is
-  // NOT a source of "is this slot free" for anyone but the owner anymore;
-  // use getBookedSlots() for that.
+  // notes. Every signed-in account (owner or player) gets every
+  // reservation in the park here now — see
+  // supabase_reservation_full_visibility_migration.sql. This is safe to
+  // read from freely; write access (cancel, mark paid, merge hours) stays
+  // separately restricted to the owner or whoever created that row (see
+  // canCancel/togglePaid in BookingScreen).
   reservations: Reservation[];
   loading: boolean;
   // Bumped every time a realtime change comes in for `reservations`, so a
@@ -187,12 +193,12 @@ export function BookingProvider({ children }: { children: ReactNode }) {
   const fetchingRef = useRef(false);
   const refetchPendingRef = useRef(false);
 
-  // What columns/rows this account is even allowed to read in full — see
-  // supabase_reservation_privacy_fix_migration.sql. The owner still reads
-  // every reservation (that's the job). A player's own full rows are all
-  // they get here now; every OTHER customer's court/hour availability
-  // comes from getBookedSlots() below instead, which never returns a
-  // name or notes for anyone.
+  // Every signed-in account (owner or player) reads every reservation
+  // row in full, including customer_name/notes — see
+  // supabase_reservation_full_visibility_migration.sql. Editing/cancelling
+  // stays restricted separately (see canCancel/togglePaid in
+  // BookingScreen and the RLS write policies) — this only widens what can
+  // be *read*.
   const fetchAll = async () => {
     if (fetchingRef.current) {
       refetchPendingRef.current = true;
@@ -202,14 +208,10 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     try {
       do {
         refetchPendingRef.current = false;
-        let query = supabase
+        const { data, error } = await supabase
           .from('reservations')
           .select('id, customer_name, court, date, hours, players, notes, is_paid, created_by, created_at')
           .order('created_at', { ascending: true });
-        if (!isOwner && session) {
-          query = query.eq('created_by', session.user.id);
-        }
-        const { data, error } = await query;
         if (error) {
           console.warn('Failed to load reservations', error);
           break;
@@ -236,8 +238,23 @@ export function BookingProvider({ children }: { children: ReactNode }) {
       })
       .subscribe();
 
+    // A backgrounded (not force-quit) app's realtime websocket can get
+    // silently dropped by the OS, and even when it survives, anything
+    // that changed while this device was backgrounded may have arrived
+    // before the reconnect and gotten missed. Re-fetching on every
+    // foreground transition means "open it later" always shows the
+    // database's actual current state, instead of only updating live
+    // when another device happens to be online at the same moment.
+    const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') {
+        setChangeVersion((v) => v + 1);
+        fetchAll();
+      }
+    });
+
     return () => {
       supabase.removeChannel(channel);
+      appStateSub.remove();
     };
     // Deliberately re-runs if role flips (e.g. claiming owner mid-session)
     // so the fetch scope above (all rows vs. own-only) picks up the new

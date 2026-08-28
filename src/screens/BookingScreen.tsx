@@ -34,7 +34,6 @@ import {
 } from '../bookingTypes';
 import { generateId } from '../types';
 import { formatCurrency } from '../utils/currency';
-import PaidChip from '../components/PaidChip';
 import VenuePhotoCarousel from '../components/VenuePhotoCarousel';
 import VenuePhotoManagerModal from '../components/VenuePhotoManagerModal';
 import { useVenuePhotos } from '../context/VenuePhotosContext';
@@ -44,6 +43,8 @@ import CancelReservationModal from '../components/CancelReservationModal';
 import AlertModal from '../components/AlertModal';
 import ReservationConfirmedModal from '../components/ReservationConfirmedModal';
 import CalendarPickerModal from '../components/CalendarPickerModal';
+import NotificationBell from '../components/NotificationBell';
+import UpcomingReservationsModal from '../components/UpcomingReservationsModal';
 
 const DATE_STRIP_DAYS = 14;
 
@@ -98,6 +99,7 @@ export default function BookingScreen({
     [venuePhotos]
   );
   const [showPhotoManager, setShowPhotoManager] = useState(false);
+  const [showUpcoming, setShowUpcoming] = useState(false);
   const myName = profile?.display_name?.trim() || '';
 
   const dates = useMemo(() => nextDays(DATE_STRIP_DAYS), []);
@@ -138,24 +140,23 @@ export default function BookingScreen({
     setSelectedSlots({});
   }, [selectedDate]);
 
-  // Reservations THIS ACCOUNT can see in full (name, notes, etc). For the
-  // owner that's every reservation on this date; for a player it's now
-  // only their own (see BookingContext / the privacy-fix migration) — so
-  // this is right for "my reservation" logic (merging more hours into an
-  // existing booking, listing "My Reservations") but it is NOT a
-  // complete picture of which slots are taken park-wide anymore. Use
-  // `bookedSlots` below for that.
+  // Every reservation on this date, in full (name, notes, etc) —
+  // everyone reads every row now (see BookingContext / the
+  // full-visibility migration). The merge-match below still only ever
+  // matches a row this account itself created (see the `!isOwner`
+  // createdBy check a bit further down), so seeing everyone's rows here
+  // doesn't risk merging into a stranger's booking.
   const reservationsForDate = useMemo(
     () => reservations.filter((r) => r.date === selectedDate),
     [reservations, selectedDate]
   );
 
   // Park-wide availability for the selected date — every court/hour
-  // that's taken and whether it's paid, with no other customer's name or
-  // notes attached (sourced from the get_booked_slots RPC). This is the
-  // only reliable source for "is this slot free," for either role, since
-  // `reservations` no longer necessarily contains every OTHER customer's
-  // booking for a player account.
+  // that's taken and whether it's paid (sourced from the
+  // get_booked_slots RPC). `reservationsForDate` above now also reflects
+  // this directly since everyone reads every row, but this RPC is still
+  // used for the fast pre-submit conflict check since it's a single
+  // lightweight call.
   const [bookedSlots, setBookedSlots] = useState<BookedSlot[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -475,19 +476,18 @@ export default function BookingScreen({
     }
   };
 
-  // Owners see the whole park's upcoming bookings (that's their job).
-  // Players only see their own — the availability grid above already
-  // shows them which slots are taken without exposing every other
-  // customer's name and notes in a list.
+  // Everyone — owner and players alike — sees the whole park's upcoming
+  // bookings now (see supabase_reservation_full_visibility_migration.sql).
+  // Who can act on a given card (Cancel, mark paid) is still gated
+  // separately by canCancel/isOwner below.
   const upcoming = useMemo(() => {
     return reservations
       .filter((r) => r.date >= today)
-      .filter((r) => isOwner || r.createdBy === session?.user.id)
       .sort((a, b) => {
         if (a.date !== b.date) return a.date < b.date ? -1 : 1;
         return Math.min(...a.hours) - Math.min(...b.hours);
       });
-  }, [reservations, today, isOwner, session?.user.id]);
+  }, [reservations, today]);
 
   // Groups `upcoming` by (booker + customer name + date) — the same key
   // the merge logic above uses to recognize "the same booking session" —
@@ -539,15 +539,20 @@ export default function BookingScreen({
             <Text style={styles.appBarSubtitle}>COURT RESERVATION</Text>
           </View>
         </View>
-        {isOwner && onOpenLegacy && (
-          <Pressable
-            onPress={onOpenLegacy}
-            style={styles.legacyButton}
-            accessibilityLabel="Open Payment Tracker (session mode)"
-            accessibilityRole="button"
-          >
-            <Text style={styles.legacyButtonText}>💳 Payment Tracker</Text>
-          </Pressable>
+        {isOwner && (
+          <View style={styles.appBarOwnerRight}>
+            <NotificationBell />
+            {onOpenLegacy && (
+              <Pressable
+                onPress={onOpenLegacy}
+                style={styles.legacyButton}
+                accessibilityLabel="Open Payment Tracker (session mode)"
+                accessibilityRole="button"
+              >
+                <Text style={styles.legacyButtonText}>💳 Payment Tracker</Text>
+              </Pressable>
+            )}
+          </View>
         )}
         {!isOwner && onOpenBill && (
           <Pressable
@@ -736,7 +741,7 @@ export default function BookingScreen({
         <View style={styles.legendRow}>
           <LegendDot color="#DFF5E3" border="#8FD9A3" label="Available" />
           <LegendDot color={AppColors.gold} label="Selected" />
-          <LegendDot color="#FCE8A6" label="Pending" />
+          <LegendDot color="#FCE8A6" label="Reserved" />
           <LegendDot color="#D8D8D8" label="Booked" />
           <LegendDot color="#F0F0F0" label="Unavailable" />
         </View>
@@ -850,95 +855,24 @@ export default function BookingScreen({
           </View>
         )}
 
-        {/* Upcoming reservations */}
-        <Text style={styles.sectionTitle}>
-          {isOwner ? 'Upcoming Reservations' : 'My Reservations'}
-        </Text>
-        {upcomingGroups.length === 0 ? (
-          <Text style={styles.emptyText}>
-            {isOwner ? 'No upcoming reservations yet.' : "You haven't booked a court yet."}
+        {/* Upcoming reservations — button opens the full list in a modal
+            instead of stacking every booking inline, so a busy day with
+            lots of reservations doesn't push the rest of the home screen
+            further and further down. */}
+        <Text style={styles.sectionTitle}>Upcoming Reservations</Text>
+        <Pressable
+          onPress={() => setShowUpcoming(true)}
+          style={styles.upcomingButton}
+          accessibilityRole="button"
+          accessibilityLabel={`View upcoming reservations, ${upcomingGroups.length} total`}
+        >
+          <Text style={styles.upcomingButtonText}>
+            {upcomingGroups.length === 0
+              ? 'No upcoming reservations yet'
+              : `View Upcoming Reservations (${upcomingGroups.length})`}
           </Text>
-        ) : (
-          upcomingGroups.map((g) => {
-            // Single-court booking — same layout as before.
-            if (g.items.length === 1) {
-              const r = g.items[0];
-              return (
-                <View key={g.key} style={styles.reservationCard}>
-                  <View style={styles.reservationHeader}>
-                    <Text style={styles.reservationName}>{r.customerName}</Text>
-                    <PaidChip paid={r.isPaid} onPress={isOwner ? () => togglePaid(r) : undefined} />
-                  </View>
-                  <Text style={styles.reservationDetail}>
-                    {r.court} · {formatFriendlyDate(r.date)}
-                  </Text>
-                  <Text style={styles.reservationDetail}>{slotLabelsForHours(r.hours).join(', ')}</Text>
-                  <Text style={styles.reservationDetail}>
-                    {r.players} player{r.players === 1 ? '' : 's'}
-                    {r.notes ? ` · ${r.notes}` : ''}
-                  </Text>
-                  <View style={styles.reservationFooter}>
-                    <Text style={styles.reservationTotal}>{formatCurrency(reservationTotal(r))}</Text>
-                    {canCancel(r) && (
-                      <Pressable onPress={() => deleteReservation(r)} accessibilityRole="button">
-                        <Text style={styles.cancelText}>Cancel</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                </View>
-              );
-            }
-
-            // Multiple courts booked by the same person on the same day —
-            // one card, one sub-row per court, instead of a separate card
-            // per court.
-            return (
-              <View key={g.key} style={styles.reservationCard}>
-                <View style={styles.reservationHeader}>
-                  <Text style={styles.reservationName}>{g.customerName}</Text>
-                  <Text style={styles.reservationDetail}>{formatFriendlyDate(g.date)}</Text>
-                </View>
-                {g.items.map((r, i) => (
-                  <View
-                    key={r.id}
-                    style={[
-                      styles.reservationSubRow,
-                      i < g.items.length - 1 && styles.reservationSubRowDivider,
-                    ]}
-                  >
-                    <View style={styles.reservationSubMain}>
-                      <View style={styles.reservationSubHeaderRow}>
-                        <Text style={styles.reservationCourtName}>{r.court}</Text>
-                        <PaidChip paid={r.isPaid} onPress={isOwner ? () => togglePaid(r) : undefined} />
-                      </View>
-                      <Text style={styles.reservationDetail}>{slotLabelsForHours(r.hours).join(', ')}</Text>
-                      <Text style={styles.reservationDetail}>
-                        {r.players} player{r.players === 1 ? '' : 's'}
-                        {r.notes ? ` · ${r.notes}` : ''}
-                      </Text>
-                    </View>
-                    <View style={styles.reservationSubAside}>
-                      <Text style={styles.reservationTotal}>{formatCurrency(reservationTotal(r))}</Text>
-                      {canCancel(r) && (
-                        <Pressable
-                          onPress={() => deleteReservation(r)}
-                          accessibilityRole="button"
-                          style={{ marginTop: 6 }}
-                        >
-                          <Text style={styles.cancelText}>Cancel</Text>
-                        </Pressable>
-                      )}
-                    </View>
-                  </View>
-                ))}
-                <View style={styles.reservationFooter}>
-                  <Text style={styles.reservationDetail}>{g.items.length} courts</Text>
-                  <Text style={styles.reservationTotal}>{formatCurrency(g.total)}</Text>
-                </View>
-              </View>
-            );
-          })
-        )}
+          {upcomingGroups.length > 0 && <Text style={styles.upcomingButtonChevron}>›</Text>}
+        </Pressable>
 
         {/* Venue info — amenities, contact, location */}
         <Text style={styles.sectionTitle}>About This Venue</Text>
@@ -996,6 +930,25 @@ export default function BookingScreen({
           onClose={() => setShowPhotoManager(false)}
         />
       )}
+
+      <UpcomingReservationsModal
+        visible={showUpcoming}
+        onClose={() => setShowUpcoming(false)}
+        groups={upcomingGroups}
+        isOwner={isOwner}
+        canCancel={canCancel}
+        onTogglePaid={togglePaid}
+        onCancel={(r) => {
+          // Close this modal first so the confirmation dialog opened by
+          // deleteReservation isn't stacked on top of it — same
+          // convention PlayerCard follows for its own nested modal
+          // (OrdersModal -> edit-order modal), for the same reason:
+          // two simultaneously-visible <Modal>s is a known rough edge
+          // on this app's RN setup.
+          setShowUpcoming(false);
+          deleteReservation(r);
+        }}
+      />
     </View>
   );
 }
@@ -1014,7 +967,7 @@ function cellLabelFor(status: CellStatus): string {
     case 'booked':
       return 'Booked';
     case 'pending':
-      return 'Pending';
+      return 'Reserved';
     case 'past':
       return '—';
     case 'selected':
@@ -1081,6 +1034,7 @@ const styles = StyleSheet.create({
   logo: { width: 38, height: 38, borderRadius: 6 },
   appBarTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   appBarSubtitle: { color: 'rgba(255,255,255,0.7)', fontSize: 11, letterSpacing: 1.2 },
+  appBarOwnerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   legacyButton: {
     backgroundColor: 'rgba(255,255,255,0.12)',
     paddingHorizontal: 12,
@@ -1289,50 +1243,20 @@ const styles = StyleSheet.create({
   reserveButtonDisabled: { opacity: 0.7 },
   reserveButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
 
-  emptyText: { color: '#888', fontSize: 13, paddingHorizontal: 16 },
-  reservationCard: {
+  upcomingButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     backgroundColor: '#fff',
     marginHorizontal: 16,
-    marginBottom: 10,
-    padding: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#eee',
   },
-  reservationHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  reservationName: { fontSize: 15, fontWeight: 'bold', color: '#222' },
-  reservationDetail: { fontSize: 12.5, color: '#666', marginTop: 2 },
-  reservationSubRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-  },
-  reservationSubRowDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  reservationSubMain: { flex: 1, paddingRight: 10 },
-  reservationSubAside: { alignItems: 'flex-end' },
-  reservationSubHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  reservationCourtName: { fontSize: 13.5, fontWeight: '700', color: '#222', marginRight: 8 },
-  reservationFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  reservationTotal: { fontSize: 14, fontWeight: 'bold', color: AppColors.forestGreen },
-  cancelText: { color: AppColors.crimsonRed, fontSize: 13, fontWeight: '600' },
+  upcomingButtonText: { fontSize: 14, fontWeight: '700', color: AppColors.forestGreen },
+  upcomingButtonChevron: { fontSize: 20, color: AppColors.forestGreen, fontWeight: 'bold' },
 
   infoCard: {
     backgroundColor: '#fff',

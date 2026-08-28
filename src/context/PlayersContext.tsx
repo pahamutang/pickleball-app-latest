@@ -7,7 +7,7 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
-import { Alert } from 'react-native';
+import { Alert, AppState, AppStateStatus } from 'react-native';
 import { supabase } from '../services/supabaseClient';
 import { Player } from '../types';
 
@@ -29,6 +29,7 @@ type PlayerRow = {
   court_fee: number;
   court_fee_paid: boolean;
   order_items: OrderItemRow[] | null;
+  linked_user_id: string | null;
 };
 
 type OrderItemRow = {
@@ -52,6 +53,7 @@ function rowToPlayer(row: PlayerRow): Player {
       quantity: o.quantity,
       isPaid: o.is_paid,
     })),
+    linkedUserId: row.linked_user_id ?? undefined,
   };
 }
 
@@ -88,7 +90,7 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
         const { data, error } = await supabase
           .from('players')
           .select(
-            'id, name, court_fee, court_fee_paid, order_items(id, name, price, quantity, is_paid)'
+            'id, name, court_fee, court_fee_paid, linked_user_id, order_items(id, name, price, quantity, is_paid)'
           )
           .order('created_at', { ascending: true });
         if (error) {
@@ -118,8 +120,18 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchAll)
       .subscribe();
 
+    // Same gap as BookingContext had: a backgrounded (not force-quit) app
+    // can silently drop its realtime connection, or simply miss changes
+    // that happened while it wasn't listening. Re-fetch on every
+    // foreground transition so reopening later always shows the
+    // database's actual current state.
+    const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') fetchAll();
+    });
+
     return () => {
       supabase.removeChannel(channel);
+      appStateSub.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -168,6 +180,7 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
             name: p.name,
             court_fee: p.courtFee,
             court_fee_paid: p.courtFeePaid,
+            linked_user_id: p.linkedUserId ?? null,
           });
           if (error) noteError('save player', error);
         } else if (

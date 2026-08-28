@@ -23,6 +23,7 @@ import SummaryStat from '../components/SummaryStat';
 import AddPlayerModal from '../components/AddPlayerModal';
 import AddOrderModal from '../components/AddOrderModal';
 import PaymentCalculatorModal from '../components/PaymentCalculatorModal';
+import NotificationBell from '../components/NotificationBell';
 
 export default function HomeScreen({
   onOpenSettings,
@@ -555,6 +556,7 @@ export default function HomeScreen({
           </View>
         </View>
         <View style={styles.appBarRight}>
+          <NotificationBell />
           <Pressable onPress={onOpenSettings} hitSlop={10} accessibilityLabel="Settings" accessibilityRole="button">
             <Text style={styles.gearIcon}>⚙</Text>
           </Pressable>
@@ -637,6 +639,7 @@ export default function HomeScreen({
         visible={addPlayerVisible}
         onCancel={() => setAddPlayerVisible(false)}
         onSubmit={handleAddPlayer}
+        existingPlayers={players}
       />
 
       <AddOrderModal

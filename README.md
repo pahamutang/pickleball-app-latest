@@ -1,105 +1,89 @@
 # Pickleball Court Reservation and Payment Management System for Mt. Pickle Park
 
-An Expo/React Native app with two parts, both synced live through Supabase:
+An Expo/React Native app with two parts:
 
 - **Court Reservation** (`src/screens/BookingScreen.tsx`) — the screen the
-  app opens to. Lets an owner or player pick a court, a date, and one or
-  more hourly time slots, record who booked it and how many players, and
-  (owner-only) mark the reservation paid/unpaid. Double-booked slots are
-  automatically disabled, with a database-level trigger preventing race
-  conditions on top of the client-side check.
-- **Session Tracker** (`src/screens/HomeScreen.tsx` and friends) — tracks
-  players, court fee, food/drink orders, per-item paid/unpaid status, and
-  emails a receipt when a session finishes.
+  app opens to. Lets staff pick a court, a date, and one or more hourly
+  time slots, record who booked it and how many players, and mark the
+  reservation paid/unpaid. Double-booked slots are automatically disabled.
+- **Session Tracker** (the original app — `src/screens/HomeScreen.tsx` and
+  friends) — tracks players, court fee, food/drink orders, per-item
+  paid/unpaid status, and emails a full receipt when a session finishes.
 
 A button in each screen's top bar ("💳 Payment Tracker" on the Reservation
-screen, "📅" on the Session Tracker) switches between the two — owner
-accounts only.
+screen, "📅" on the Session Tracker) switches between the two.
 
 ## Owner vs. player accounts (Supabase)
 
-The app requires an account (email + password) and syncs live through
-Supabase. There are two roles:
+The app now requires an account (email + password) and syncs live through
+Supabase instead of storing everything only on one phone. There are two
+roles:
 
 - **Owner** — full access: booking, the session tracker, adding players,
-  logging orders, marking things paid/unpaid. Becomes the owner by entering
-  the secret PIN (set inside `claim_owner_role()`) via `AuthContext.claimOwnerRole`.
-- **Player** — mostly read-only. After signing up, they add themselves to
-  the session with just their name (`JoinSessionScreen.tsx`) — no code, no
-  owner involvement. They see their own bill update live, can book courts
-  themselves, but can't mark anything paid or see other players'/customers'
-  data — enforced by Postgres Row Level Security, not just hidden in the UI.
+  logging orders, marking things paid. Becomes the owner by entering the
+  secret PIN (set in `supabase_migration.sql`) at sign-up.
+- **Player** — read-only. After signing up, they add themselves to the
+  session with just their name (`JoinSessionScreen.tsx`) — no code, no
+  owner involvement. From then on they see their own orders and bill
+  update live, but can't mark anything paid or see anyone else's data —
+  enforced by Postgres Row Level Security, not just hidden in the UI.
 
-### Setup
-
+Setup:
 1. Create a free Supabase project.
-2. Run the SQL migrations in the SQL Editor, **in this order** (each file's
-   header comments explain what it does and what it depends on):
-   1. A base migration creating `profiles`, `players`, `order_items`, and
-      the `claim_owner_role()` PIN function — **not included in this repo
-      as of this snapshot**; if you don't already have one, see
-      `supabase_base_migration_DRAFT.sql` for a reconstructed starting
-      point (edit the PIN before running).
-   2. `supabase_fix_migration.sql` — creates `payments` and `reservations`.
-   3. `supabase_profiles_recursion_fix.sql` — owner-access policies, `is_owner()`.
-   4. `supabase_double_booking_migration.sql` — booking race prevention + `get_booked_slots()`.
-   5. `supabase_reservation_merge_migration.sql` — lets players extend their own bookings.
-   6. `supabase_reservation_privacy_fix_migration.sql` — locks reservation rows down to owner/creator.
-   7. `supabase_venue_photos_migration.sql` — venue photo carousel storage.
+2. Run `supabase_migration.sql` in the SQL Editor (edit the owner PIN near
+   the top first).
 3. Copy the Project URL + "Publishable"/anon key into `.env` (see
-   `.env.example` for the expected variable names). **Never** put the
-   secret/service_role key here.
-4. `npm install`.
+   `.env` in this repo for the expected variable names).
+4. `npm install` to pull in `@supabase/supabase-js` and
+   `react-native-url-polyfill`.
 
-Data lives in Supabase and is synced in real time: `players`, `order_items`,
-`payments`, `reservations`, and `venue_photos` all update live across every
-signed-in device.
+Data no longer lives only in `AsyncStorage` — `players`, `order_items`,
+and `payments` are synced from Supabase in real time. `reservations`
+(the Court Reservation module) is still local-only/owner-side for now.
 
-## Email sending (no backend)
+## Email sending (no sign-in)
 
-Receipts are sent by opening the device's own mail app (or, on Android,
-Gmail's compose intent directly, to avoid an OS-level crash on some Android
-15 devices), pre-filled with the receipt text — the user reviews and hits
-Send themselves. There is **no backend service and no fixed sending
-account**; `src/services/emailService.ts` is entirely on-device.
+Earlier versions of this app had each user sign into their own Gmail
+account with Google OAuth and send through the Gmail API. That's gone now
+— it required a custom Development Build to work at all (Google sign-in
+redirects don't work in plain Expo Go), which was more setup than this
+needed.
+
+Instead: there's **one fixed Gmail account** on the backend. The app just
+asks for the recipient's email address (typed in, same as before) and
+POSTs the receipt to the backend, which sends it via that one account
+using a Gmail **App Password**. No sign-in screen, no OAuth, no token
+refresh, works fine in plain Expo Go.
 
 ## Project structure
 
 ```
 pickleball-app/
-  App.tsx                        entry point; routes by role (owner/player)
+  App.tsx                        entry point, top-level tab switcher
   app.json                       Expo config (name, package id)
   eas.json                       EAS Build config (for the APK)
+  .github/workflows/eas-build.yml  triggers a cloud APK build on push (see below)
   assets/
-    mt_pickle_logo.jpg           venue logo
-    venue/                       court photos for the carousel
+    mt_pickle_logo.jpg           placeholder — swap with your real logo
   src/
     colors.ts                    brand palette
     types.ts                     Player / OrderItem + derived getters (session tracker)
-    payment.ts / paymentLogReducer.ts   Payment log types + pure reducer logic
-    bookingTypes.ts               Reservation type + court/date/time-slot helpers
-    context/
-      AuthContext.tsx             session, profile, sign in/up/out, claimOwnerRole
-      BookingContext.tsx          Supabase-synced reservations
-      PlayersContext.tsx          Supabase-synced players/orders
-      PaymentLogContext.tsx       Supabase-synced payment history
-      VenuePhotosContext.tsx      Supabase-synced venue photo carousel
-    services/
-      supabaseClient.ts
-      emailService.ts             builds + sends the receipt via the device's mail app
-      settingsService.ts          AsyncStorage for session title/owner email
-      venuePhotoStorage.ts
-    utils/                        currency formatting, base64, venue slide helpers
-    components/                   PlayerCard, PaidChip, and the modals
-    screens/
-      BookingScreen.tsx            Court Reservation (app's landing screen)
-      HomeScreen.tsx                Session Tracker
-      SettingsScreen.tsx
-      PaymentHistoryScreen.tsx
-      AuthScreen.tsx
-      JoinSessionScreen.tsx        player self-join flow
-      MyBillScreen.tsx              player's live read-only bill
+    bookingTypes.ts               Reservation type + court/date/time-slot helpers (booking)
+    context/PaymentLogContext.tsx
+    context/BookingContext.tsx    AsyncStorage-persisted reservations list
+    services/emailService.ts     builds + sends the receipt via the backend
+    services/settingsService.ts  AsyncStorage for session title/owner email
+    utils/currency.ts            ₱ formatting, date formatting
+    components/                  PlayerCard, PaidChip, and the 3 modals
+    screens/BookingScreen.tsx     NEW — Court Reservation (app's landing screen)
+    screens/HomeScreen.tsx        Session Tracker (original app)
+    screens/SettingsScreen.tsx
+    screens/PaymentHistoryScreen.tsx
 ```
+
+Note: `src/context/AuthContext.tsx` and the `expo-auth-session`,
+`expo-crypto`, and `expo-secure-store` packages are no longer used —
+delete the file and they're already removed from `package.json`.
 
 ## 1. Install and run in Expo Go
 
@@ -112,34 +96,80 @@ npx expo start
 
 Scan the QR code with the Expo Go app on your phone.
 
-## 2. Build the APK — on GitHub, not locally
+## 2. Set up the backend
 
-This repo includes `.github/workflows/eas-build.yml` (if present in your
-checkout), which triggers a cloud build on Expo's EAS servers straight from
-GitHub — no `expo start`, no Expo Go, and no waiting on your own machine.
+See `../pickleball-backend/README.md`. In short:
+
+```
+cd pickleball-backend
+npm install
+cp .env.example .env
+# fill in APP_API_KEY, GMAIL_USER, GMAIL_APP_PASSWORD in .env
+npm start
+```
+
+For the Gmail account you use as `GMAIL_USER`:
+1. Turn on 2-Step Verification (Google Account → Security).
+2. Google Account → Security → App Passwords → generate one for "Mail".
+3. Paste that 16-character password into `.env` as `GMAIL_APP_PASSWORD`.
+
+While testing locally, expose it with ngrok (`ngrok http 3000`) and use
+that `https://...ngrok...` URL as `BACKEND_URL`. For the real APK, deploy
+the backend to Render/Railway/Fly.io instead so it has a stable URL.
+
+## 3. Point the app at the backend
+
+In `src/services/emailService.ts`:
+
+```ts
+const BACKEND_URL = 'https://your-backend-url';
+const BACKEND_API_KEY = 'same value as APP_API_KEY in the backend .env';
+```
+
+## 4. Build the APK — on GitHub, not locally
+
+This repo includes `.github/workflows/eas-build.yml`, which triggers a
+cloud build on Expo's EAS servers straight from GitHub — no `expo start`,
+no Expo Go, and no waiting on your own machine.
 
 **One-time setup:**
-1. Push this repo to GitHub.
-2. Create a free account at [expo.dev](https://expo.dev), then generate an
-   access token under **Account Settings → Access Tokens**.
-3. In the GitHub repo: **Settings → Secrets and variables → Actions → New
-   repository secret**. Name it `EXPO_TOKEN`, paste the token as the value.
+1. Push this repo to GitHub (if you haven't already).
+2. Create a free account at [expo.dev](https://expo.dev) if you don't have
+   one, then generate an access token under
+   **Account Settings → Access Tokens**.
+3. In the GitHub repo: **Settings → Secrets and variables → Actions →
+   New repository secret**. Name it `EXPO_TOKEN`, paste the token as the
+   value.
 4. If this is the first time *your* Expo account is building this project,
-   run `npx eas init` once to link `app.json`'s `extra.eas.projectId` to
-   your own account.
+   run `npx eas init` once from your machine to link `app.json`'s
+   `extra.eas.projectId` to your own account (only needed once, not for
+   every build).
 
 **After that**, every push to `main`/`master` kicks off a build
-automatically, or trigger one manually from the **Actions** tab.
+automatically. You can also trigger one manually from the **Actions** tab
+→ **Build Android APK** → **Run workflow**. When it finishes, the
+downloadable APK link shows up on your
+[expo.dev](https://expo.dev) dashboard under the project's **Builds** tab.
 
-If you need a local build instead:
+Builds run on Expo's servers (typically a few minutes), so you can close
+your laptop and check back later — nothing runs on your own device.
+
+If you ever do need a local build instead:
 ```
 npx eas-cli build -p android --profile preview
 ```
 
 ## Notes
 
+- **Session data (players/orders) is in-memory only** — closing the app
+  clears the current session.
+- Every receipt is sent **from** the one fixed Gmail account, **to**
+  whatever address the user types in (e.g. into a "session owner email"
+  field in Settings). Nothing about the recipient needs to sign in or
+  authorize anything.
+- Gmail App Passwords are fine for this volume of sending. If you ever
+  send a lot of email or need better deliverability, a transactional
+  email service (Resend, SendGrid, Postmark) is a more durable long-term
+  choice — not something you need to worry about now.
 - Currency is peso (₱) formatting, done manually in `utils/currency.ts`
   rather than via `Intl`, to avoid relying on the device's ICU data.
-- `.env` in this repo is expected to hold your *own* project's URL/anon
-  key — don't commit real credentials if you're sharing this repo further,
-  even though the anon/publishable key is safe-by-design (RLS-gated).

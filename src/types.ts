@@ -18,6 +18,12 @@ export interface Player {
   courtFee: number;
   courtFeePaid: boolean;
   orders: OrderItem[];
+  // Set when this row was created by picking a signed-in app account
+  // (rather than typed in as a walk-in name) — see AddPlayerModal. This
+  // is what makes court_fee/court_fee_paid changes actually show up on
+  // that person's own MyBillScreen; a walk-in row with no account has
+  // nowhere to sync to.
+  linkedUserId?: string;
 }
 
 export type PaymentStatus = 'Fully Paid' | 'Partially Paid' | 'Unpaid';

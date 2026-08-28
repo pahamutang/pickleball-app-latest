@@ -7,7 +7,7 @@ import React, {
   useCallback,
   ReactNode,
 } from 'react';
-import { Alert } from 'react-native';
+import { Alert, AppState, AppStateStatus } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabaseClient';
 import { Payment } from '../payment';
@@ -148,8 +148,14 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, fetchAll)
       .subscribe();
 
+    // Same gap as BookingContext had — see its comment for why.
+    const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') fetchAll();
+    });
+
     return () => {
       supabase.removeChannel(channel);
+      appStateSub.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
