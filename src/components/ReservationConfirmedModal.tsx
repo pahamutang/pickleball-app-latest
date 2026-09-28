@@ -42,8 +42,16 @@ export default function ReservationConfirmedModal({
   // Modal, which behaves inconsistently across iOS/Android/web).
   const [qrOpen, setQrOpen] = useState(false);
   const { width: winW, height: winH } = useWindowDimensions();
-  const bigH = Math.min(winH - 140, (winW - 32) / QR_RATIO);
-  const bigW = bigH * QR_RATIO;
+  // Fill the full screen width; only shrink if the screen is too short.
+  // Small QR inside the card: explicit pixel size (no percentage/aspectRatio
+  // layout) so it always sits right under the "Pay with GCash" heading.
+  const qrW = Math.min(240, winW - 96);
+  const qrH = qrW / QR_RATIO;
+  const [qrFailed, setQrFailed] = useState(false);
+
+  // Fill the full screen width; only shrink if the screen is too short.
+  const bigW = Math.min(winW, (winH - 120) * QR_RATIO);
+  const bigH = bigW / QR_RATIO;
 
   // Never reopen with the QR still enlarged from last time.
   useEffect(() => {
@@ -120,15 +128,26 @@ export default function ReservationConfirmedModal({
                   accessibilityRole="button"
                   accessibilityLabel="Enlarge GCash QR code"
                 >
-                  <Image
-                    source={QR_IMAGE}
-                    style={styles.qr}
-                    resizeMode="contain"
-                    accessibilityLabel="GCash QR code"
-                  />
-                  <View style={styles.enlargeBadge}>
-                    <Text style={styles.enlargeBadgeText}>🔍 Tap to enlarge</Text>
-                  </View>
+                  {qrFailed ? (
+                    <View style={[styles.qr, { width: qrW, height: 80, justifyContent: 'center' }]}>
+                      <Text style={styles.payMeta}>
+                        Couldn't load the QR code. Please pay cash at the court instead.
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      <Image
+                        source={QR_IMAGE}
+                        style={[styles.qr, { width: qrW, height: qrH }]}
+                        resizeMode="contain"
+                        onError={() => setQrFailed(true)}
+                        accessibilityLabel="GCash QR code"
+                      />
+                      <View style={styles.enlargeBadge}>
+                        <Text style={styles.enlargeBadgeText}>🔍 Tap to enlarge</Text>
+                      </View>
+                    </>
+                  )}
                 </Pressable>
                 <Text style={styles.payAmount}>Amount to pay: {formatCurrency(grandTotal)}</Text>
                 {!!GCASH.accountName && <Text style={styles.payMeta}>Account name: {GCASH.accountName}</Text>}
@@ -159,7 +178,7 @@ export default function ReservationConfirmedModal({
             <Text style={styles.qrOverlayHint}>Scan this with GCash or your banking app</Text>
             <Image
               source={QR_IMAGE}
-              style={{ width: bigW, height: bigH, borderRadius: 12 }}
+              style={{ width: bigW, height: bigH }}
               resizeMode="contain"
               accessibilityLabel="Enlarged GCash QR code"
             />
@@ -224,10 +243,8 @@ const styles = StyleSheet.create({
   },
   payTitle: { fontSize: 15, fontWeight: '800', color: '#0B5CB8' },
   paySubtitle: { fontSize: 12, color: '#5a6b7d', marginTop: 2 },
-  qrPress: { marginTop: 12, width: 240, maxWidth: '100%', alignItems: 'center' },
+  qrPress: { marginTop: 12, alignSelf: 'center', alignItems: 'center' },
   qr: {
-    width: '100%',
-    aspectRatio: 912 / 1345,
     borderRadius: 10,
   },
   enlargeBadge: {
@@ -246,10 +263,12 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.92)',
+    // Same solid blue as the GCash screenshot's own background, so the
+    // picture melts into the screen with no black bands above/below it.
+    backgroundColor: '#015BE5',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
+    padding: 0,
   },
   qrOverlayHint: { color: '#fff', fontSize: 13, fontWeight: '600', marginBottom: 12 },
   qrCloseBtn: {
