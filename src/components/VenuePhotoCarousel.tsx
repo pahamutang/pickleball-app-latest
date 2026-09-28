@@ -11,6 +11,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import PhotoViewerModal from './PhotoViewerModal';
 
 const CAROUSEL_HEIGHT = 240;
 
@@ -25,6 +26,9 @@ export default function VenuePhotoCarousel({
   onManagePress?: () => void;
 }) {
   const [index, setIndex] = useState(0);
+  // Full-screen viewer (see PhotoViewerModal) — lets a player see each
+  // photo whole instead of the cropped strip.
+  const [viewerOpen, setViewerOpen] = useState(false);
   const listRef = useRef<FlatList<ImageSourcePropType>>(null);
   // Mirrors `index` without being a dependency itself, so the effect below
   // can read the latest index without re-running every time the user
@@ -82,7 +86,13 @@ export default function VenuePhotoCarousel({
         scrollEventThrottle={16}
         keyExtractor={(_, i) => `venue-photo-${i}`}
         renderItem={({ item }) => (
-          <Image source={item} style={[styles.photo, { width: screenWidth }]} resizeMode="cover" />
+          <Pressable
+            onPress={() => setViewerOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="View photo full screen"
+          >
+            <Image source={item} style={[styles.photo, { width: screenWidth }]} resizeMode="cover" />
+          </Pressable>
         )}
       />
       <View style={styles.counterBadge}>
@@ -95,6 +105,16 @@ export default function VenuePhotoCarousel({
           <View key={i} style={[styles.dot, i === index && styles.dotActive]} />
         ))}
       </View>
+      {photos.length > 0 && (
+        <Pressable
+          onPress={() => setViewerOpen(true)}
+          style={styles.expandBtn}
+          accessibilityRole="button"
+          accessibilityLabel="View photo full screen"
+        >
+          <Text style={styles.expandBtnText}>⤢ View</Text>
+        </Pressable>
+      )}
       {onManagePress && (
         <Pressable
           onPress={onManagePress}
@@ -104,6 +124,13 @@ export default function VenuePhotoCarousel({
         >
           <Text style={styles.manageBtnText}>✏️ Edit Photos</Text>
         </Pressable>
+      )}
+      {viewerOpen && (
+        <PhotoViewerModal
+          photos={photos}
+          startIndex={Math.min(index, photos.length - 1)}
+          onClose={() => setViewerOpen(false)}
+        />
       )}
     </View>
   );
@@ -153,4 +180,16 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.4)',
   },
   manageBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  expandBtn: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.4)',
+  },
+  expandBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 });

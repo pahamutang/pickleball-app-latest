@@ -7,7 +7,8 @@ import React, {
   useState,
   ReactNode,
 } from 'react';
-import { Alert, AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus } from 'react-native';
+import { Alert } from '../utils/dialog';
 import { supabase } from '../services/supabaseClient';
 import { Player } from '../types';
 
@@ -77,6 +78,13 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
   // whichever update raced the in-flight fetch.
   const fetchingRef = useRef(false);
   const refetchPendingRef = useRef(false);
+  // Sync passes must run ONE AT A TIME. Each pass is a series of awaited
+  // writes and only updates lastSyncedRef at the very end; if the user
+  // makes a second edit while the first pass is still writing, a second
+  // pass used to start concurrently, diff against the STALE lastSyncedRef,
+  // and re-insert rows the first pass had already inserted (duplicate-key
+  // errors + a bogus "Couldn't save" alert). Chaining them fixes that.
+  const syncChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const fetchAll = useCallback(async () => {
     if (fetchingRef.current) {
@@ -108,6 +116,14 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // A realtime event (often the echo of our own write) must not refetch
+  // while our writes are still going out — the fetch would snapshot a
+  // half-written database and overwrite the user's newer local edits.
+  // Wait for any in-flight sync pass first, then fetch.
+  const onRemoteChange = useCallback(() => {
+    syncChainRef.current.then(() => fetchAll());
+  }, [fetchAll]);
+
   useEffect(() => {
     (async () => {
       await fetchAll();
@@ -116,8 +132,8 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
 
     const channel = supabase
       .channel('players-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, fetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, onRemoteChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, onRemoteChange)
       .subscribe();
 
     // Same gap as BookingContext had: a backgrounded (not force-quit) app
@@ -126,7 +142,7 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
     // foreground transition so reopening later always shows the
     // database's actual current state.
     const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (next === 'active') fetchAll();
+      if (next === 'active') onRemoteChange();
     });
 
     return () => {
@@ -146,7 +162,7 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    (async () => {
+    syncChainRef.current = syncChainRef.current.then(async () => {
       const prev = lastSyncedRef.current;
       const prevById = new Map(prev.map((p) => [p.id, p]));
       const nextById = new Map(players.map((p) => [p.id, p]));
@@ -186,11 +202,17 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
         } else if (
           before.name !== p.name ||
           before.courtFee !== p.courtFee ||
-          before.courtFeePaid !== p.courtFeePaid
+          before.courtFeePaid !== p.courtFeePaid ||
+          before.linkedUserId !== p.linkedUserId
         ) {
           const { error } = await supabase
             .from('players')
-            .update({ name: p.name, court_fee: p.courtFee, court_fee_paid: p.courtFeePaid })
+            .update({
+              name: p.name,
+              court_fee: p.courtFee,
+              court_fee_paid: p.courtFeePaid,
+              linked_user_id: p.linkedUserId ?? null,
+            })
             .eq('id', p.id);
           if (error) noteError('update player', error);
         }
@@ -250,7 +272,7 @@ export function PlayersProvider({ children }: { children: ReactNode }) {
       }
 
       lastSyncedRef.current = players;
-    })();
+    }).catch((e) => console.warn('Player sync pass failed', e));
   }, [players, loading, fetchAll]);
 
   return (

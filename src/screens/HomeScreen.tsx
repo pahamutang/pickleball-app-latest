@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Image,
   Pressable,
@@ -10,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { AppColors } from '../colors';
+import { Alert } from '../utils/dialog';
 import { OrderItem, Player, amountDue, amountPaid, generateId, grandTotal, isFullyPaid, orderTotal } from '../types';
 import { formatCurrency } from '../utils/currency';
 import { todayIso, toIsoDate } from '../bookingTypes';

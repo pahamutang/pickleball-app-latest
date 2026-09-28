@@ -234,6 +234,17 @@ export async function sendReceiptEmail(receipt: SessionReceipt): Promise<SendRes
     }
   }
 
+  // Web (laptop browser): expo-mail-composer doesn't exist here, so open the
+  // computer's default mail app with a mailto: link instead.
+  if (Platform.OS === 'web') {
+    const mailtoUrl =
+      `mailto:${receipt.ownerEmail}` +
+      `?subject=${encodeURIComponent(subject)}` +
+      `&body=${encodeURIComponent(message)}`;
+    await Linking.openURL(mailtoUrl);
+    return 'undetermined';
+  }
+
   try {
     const isAvailable = await MailComposer.isAvailableAsync();
 

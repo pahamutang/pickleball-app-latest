@@ -9,12 +9,16 @@ export type CourtType = 'INDOOR' | 'OUTDOOR';
 export interface Court {
   name: string;
   type: CourtType;
+  // Court isn't finished yet: it stays visible in the grid (labelled
+  // COMING SOON) but can't be selected or booked. Remove this flag (or set
+  // it to false) the day the court opens.
+  comingSoon?: boolean;
 }
 
 export const COURTS: Court[] = [
   { name: 'Court 1', type: 'INDOOR' },
   { name: 'Court 2', type: 'INDOOR' },
-  { name: 'Court 3', type: 'OUTDOOR' },
+  { name: 'Court 3', type: 'OUTDOOR', comingSoon: true },
 ];
 
 // Time-of-day rate tiers. Flat rate per tier — same price for indoor and

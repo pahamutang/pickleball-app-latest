@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useState,
   useCallback,
+  useRef,
   ReactNode,
 } from 'react';
 import type { Session } from '@supabase/supabase-js';
@@ -36,12 +37,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Which user the latest loadProfile call was for. A slow response for a
+  // previous user (sign out -> sign in as someone else) must never land
+  // after a newer one and overwrite it with the wrong role/name.
+  const latestProfileUserRef = useRef<string | null>(null);
+
   const loadProfile = useCallback(async (userId: string) => {
+    latestProfileUserRef.current = userId;
     const { data, error } = await supabase
       .from('profiles')
       .select('id, role, display_name')
       .eq('id', userId)
       .single();
+    if (latestProfileUserRef.current !== userId) return; // superseded
     if (error) {
       console.warn('Failed to load profile', error);
       setProfile(null);
@@ -61,8 +69,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
       if (newSession) {
+        // If a DIFFERENT account just signed in, drop the previous
+        // account's profile right away. Otherwise RootRouter keeps
+        // rendering the old role's screens (e.g. the owner app for a
+        // player who just signed in on the same device) until the new
+        // profile finishes loading.
+        setProfile((prev) => (prev && prev.id !== newSession.user.id ? null : prev));
         loadProfile(newSession.user.id);
       } else {
+        latestProfileUserRef.current = null;
         setProfile(null);
       }
     });

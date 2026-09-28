@@ -192,6 +192,9 @@ export function BookingProvider({ children }: { children: ReactNode }) {
   // converge on the server's latest truth.
   const fetchingRef = useRef(false);
   const refetchPendingRef = useRef(false);
+  // Last fetched payload, so the periodic safety-net refresh below doesn't
+  // re-render the whole screen when nothing actually changed.
+  const lastPayloadRef = useRef('');
 
   // Every signed-in account (owner or player) reads every reservation
   // row in full, including customer_name/notes — see
@@ -217,7 +220,11 @@ export function BookingProvider({ children }: { children: ReactNode }) {
           break;
         }
         const rows = (data ?? []) as ReservationRow[];
-        setReservations(rows.map(rowToReservation));
+        const payload = JSON.stringify(rows);
+        if (payload !== lastPayloadRef.current) {
+          lastPayloadRef.current = payload;
+          setReservations(rows.map(rowToReservation));
+        }
       } while (refetchPendingRef.current);
     } finally {
       fetchingRef.current = false;
@@ -236,7 +243,32 @@ export function BookingProvider({ children }: { children: ReactNode }) {
         setChangeVersion((v) => v + 1);
         fetchAll();
       })
-      .subscribe();
+      .subscribe((status) => {
+        // Previously subscribe() had no callback, so if the websocket never
+        // connected or dropped (background tab, flaky network, expired
+        // token, table not in the realtime publication) nothing happened
+        // and nothing was logged - the screen just silently stopped
+        // updating until a full page reload. Now: every (re)connect does a
+        // catch-up fetch for anything missed while disconnected, and
+        // failures are at least visible in the console.
+        if (status === 'SUBSCRIBED') {
+          setChangeVersion((v) => v + 1);
+          fetchAll();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Reservations realtime problem:', status);
+        }
+      });
+
+    // Safety net: even if realtime is unavailable (e.g. the reservations
+    // table isn't enabled for realtime in Supabase, or the socket is
+    // blocked), the screen still converges within a few seconds instead of
+    // needing a reload. Only runs while the app/tab is visible.
+    const pollTimer = setInterval(() => {
+      if (AppState.currentState === 'active') {
+        setChangeVersion((v) => v + 1);
+        fetchAll();
+      }
+    }, 10000);
 
     // A backgrounded (not force-quit) app's realtime websocket can get
     // silently dropped by the OS, and even when it survives, anything
@@ -253,6 +285,7 @@ export function BookingProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
+      clearInterval(pollTimer);
       supabase.removeChannel(channel);
       appStateSub.remove();
     };

@@ -1,8 +1,21 @@
-import React from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  Image,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { AppColors } from '../colors';
 import { Reservation, formatFriendlyDate, reservationTotal, slotLabelsForHours } from '../bookingTypes';
 import { formatCurrency } from '../utils/currency';
+import { GCASH } from '../paymentConfig';
+
+const QR_IMAGE = require('../../assets/gcash_qr.jpg');
+const QR_RATIO = 912 / 1345; // width / height of the QR image
 
 // Themed replacement for the old Alert.alert('Reservation confirmed', ...)
 // popup — shows the same info (who/what/when/total) as a proper summary
@@ -23,10 +36,31 @@ export default function ReservationConfirmedModal({
   const grandTotal = list.reduce((sum, r) => sum + reservationTotal(r), 0);
   const multi = list.length > 1;
 
+  // Tap-to-enlarge: the QR is small inside the card, so tapping it opens a
+  // big full-screen view that's much easier to scan from another phone.
+  // Rendered as an overlay inside this same Modal (not a second nested
+  // Modal, which behaves inconsistently across iOS/Android/web).
+  const [qrOpen, setQrOpen] = useState(false);
+  const { width: winW, height: winH } = useWindowDimensions();
+  const bigH = Math.min(winH - 140, (winW - 32) / QR_RATIO);
+  const bigW = bigH * QR_RATIO;
+
+  // Never reopen with the QR still enlarged from last time.
+  useEffect(() => {
+    if (list.length === 0) setQrOpen(false);
+  }, [list.length]);
+
   return (
     <Modal visible={list.length > 0} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={styles.dialog}>
+          {/* Scrolls on small phones now that the GCash section makes the
+              card taller; the Done button stays pinned below it. */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+          >
           <View style={styles.iconBadge}>
             <Text style={styles.iconText}>✅</Text>
           </View>
@@ -61,10 +95,79 @@ export default function ReservationConfirmedModal({
             </View>
           )}
 
+          {/* How to pay — two options. Neither is required right now: paying
+              here is a convenience only, and the owner/staff still confirm
+              payment in person and mark the booking as paid themselves. */}
+          {list.length > 0 && (
+            <View style={styles.payWrap}>
+              <Text style={styles.payHeading}>How would you like to pay?</Text>
+
+              <View style={styles.cashCard}>
+                <Text style={styles.cashTitle}>💵 Pay cash on the court</Text>
+                <Text style={styles.cashText}>
+                  Prefer cash? Just pay the owner/staff when you arrive at the court.
+                </Text>
+              </View>
+
+              <Text style={styles.orText}>— or —</Text>
+
+              <View style={styles.payCard}>
+                <Text style={styles.payTitle}>Pay with GCash</Text>
+                <Text style={styles.paySubtitle}>Scan the QR code below to pay online</Text>
+                <Pressable
+                  onPress={() => setQrOpen(true)}
+                  style={styles.qrPress}
+                  accessibilityRole="button"
+                  accessibilityLabel="Enlarge GCash QR code"
+                >
+                  <Image
+                    source={QR_IMAGE}
+                    style={styles.qr}
+                    resizeMode="contain"
+                    accessibilityLabel="GCash QR code"
+                  />
+                  <View style={styles.enlargeBadge}>
+                    <Text style={styles.enlargeBadgeText}>🔍 Tap to enlarge</Text>
+                  </View>
+                </Pressable>
+                <Text style={styles.payAmount}>Amount to pay: {formatCurrency(grandTotal)}</Text>
+                {!!GCASH.accountName && <Text style={styles.payMeta}>Account name: {GCASH.accountName}</Text>}
+                {!!GCASH.number && <Text style={styles.payMeta}>GCash number: {GCASH.number}</Text>}
+                <View style={styles.screenshotNote}>
+                  <Text style={styles.screenshotText}>
+                    📸 Screenshot your payment confirmation once you've finished paying, and show it
+                    to the owner/staff when you arrive at the court.
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+          </ScrollView>
+
           <Pressable onPress={onClose} style={styles.button} accessibilityRole="button">
             <Text style={styles.buttonLabel}>Done</Text>
           </Pressable>
         </View>
+
+        {qrOpen && (
+          <Pressable
+            style={styles.qrOverlay}
+            onPress={() => setQrOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close enlarged QR code"
+          >
+            <Text style={styles.qrOverlayHint}>Scan this with GCash or your banking app</Text>
+            <Image
+              source={QR_IMAGE}
+              style={{ width: bigW, height: bigH, borderRadius: 12 }}
+              resizeMode="contain"
+              accessibilityLabel="Enlarged GCash QR code"
+            />
+            <View style={styles.qrCloseBtn}>
+              <Text style={styles.qrCloseText}>✕  Tap anywhere to close</Text>
+            </View>
+          </Pressable>
+        )}
       </View>
     </Modal>
   );
@@ -87,12 +190,88 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 20,
     alignItems: 'center',
+    maxHeight: '92%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
     shadowRadius: 20,
     elevation: 10,
   },
+  scroll: { width: '100%', flexShrink: 1 },
+  scrollContent: { alignItems: 'center' },
+  payWrap: { width: '100%', marginTop: 16, alignItems: 'center' },
+  payHeading: { fontSize: 14, fontWeight: '800', color: '#1a1a1a', marginBottom: 10 },
+  cashCard: {
+    width: '100%',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#BEE6C9',
+    backgroundColor: '#EEF8F0',
+    padding: 14,
+    alignItems: 'center',
+  },
+  cashTitle: { fontSize: 14, fontWeight: '800', color: AppColors.forestGreen },
+  cashText: { fontSize: 12, color: '#3f5a48', marginTop: 4, textAlign: 'center', lineHeight: 17 },
+  orText: { fontSize: 12, color: '#999', marginVertical: 8 },
+  payCard: {
+    width: '100%',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#BFD9F5',
+    backgroundColor: '#F2F8FF',
+    padding: 14,
+    alignItems: 'center',
+  },
+  payTitle: { fontSize: 15, fontWeight: '800', color: '#0B5CB8' },
+  paySubtitle: { fontSize: 12, color: '#5a6b7d', marginTop: 2 },
+  qrPress: { marginTop: 12, width: 240, maxWidth: '100%', alignItems: 'center' },
+  qr: {
+    width: '100%',
+    aspectRatio: 912 / 1345,
+    borderRadius: 10,
+  },
+  enlargeBadge: {
+    position: 'absolute',
+    bottom: 8,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  enlargeBadgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  qrOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  qrOverlayHint: { color: '#fff', fontSize: 13, fontWeight: '600', marginBottom: 12 },
+  qrCloseBtn: {
+    marginTop: 14,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+  },
+  qrCloseText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  payAmount: { fontSize: 14, fontWeight: '700', color: '#1a1a1a', marginTop: 12 },
+  payMeta: { fontSize: 12, color: '#444', marginTop: 3 },
+  screenshotNote: {
+    marginTop: 12,
+    backgroundColor: '#FFF6DB',
+    borderWidth: 1,
+    borderColor: '#F3DC93',
+    borderRadius: 10,
+    padding: 10,
+    width: '100%',
+  },
+  screenshotText: { fontSize: 12, color: '#6b5200', lineHeight: 17, textAlign: 'center' },
   iconBadge: {
     width: 56,
     height: 56,

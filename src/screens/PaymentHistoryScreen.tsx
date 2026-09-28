@@ -7,13 +7,13 @@ import {
   StyleSheet,
   SafeAreaView,
   BackHandler,
-  Alert,
 } from 'react-native';
 import { AppColors } from '../colors';
 import { Payment, PaymentStatus } from '../payment';
 import { usePaymentLog } from '../context/PaymentLogContext';
 import { usePlayers } from '../context/PlayersContext';
 import { formatCurrency } from '../utils/currency';
+import { confirmAction } from '../utils/confirm';
 
 type FilterOption = 'all' | PaymentStatus;
 
@@ -48,14 +48,12 @@ export default function PaymentHistoryScreen({ onDone }: Props) {
 
   const handleClearHistory = () => {
     if (payments.length === 0) return;
-    Alert.alert(
-      'Clear payment history?',
-      'This removes all logged payments. This can\'t be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Clear', style: 'destructive', onPress: clearHistory },
-      ]
-    );
+    confirmAction({
+      title: 'Clear payment history?',
+      message: "This removes all logged payments. This can't be undone.",
+      confirmText: 'Clear',
+      onConfirm: clearHistory,
+    });
   };
 
   // If a PAID entry gets removed, the items it covered need to go back to
@@ -87,23 +85,17 @@ export default function PaymentHistoryScreen({ onDone }: Props) {
   // those items were never marked paid in the first place.
   const handleRemovePayment = (payment: Payment) => {
     const isPaidEntry = payment.status === 'paid';
-    Alert.alert(
-      'Remove this entry?',
-      isPaidEntry
+    confirmAction({
+      title: 'Remove this entry?',
+      message: isPaidEntry
         ? `"${payment.description}" will be removed, and those item(s) will be marked unpaid again so you can re-collect.`
         : `"${payment.description}" will be removed from the log. Their next payment will start a fresh entry.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            if (isPaidEntry) revertPlayerItems(payment);
-            removePayment(payment.id);
-          },
-        },
-      ]
-    );
+      confirmText: 'Remove',
+      onConfirm: () => {
+        if (isPaidEntry) revertPlayerItems(payment);
+        removePayment(payment.id);
+      },
+    });
   };
 
   // Handle Android hardware back button

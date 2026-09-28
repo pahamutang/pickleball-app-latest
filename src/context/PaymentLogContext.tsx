@@ -7,7 +7,8 @@ import React, {
   useCallback,
   ReactNode,
 } from 'react';
-import { Alert, AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus } from 'react-native';
+import { Alert } from '../utils/dialog';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabaseClient';
 import { Payment } from '../payment';
@@ -80,6 +81,13 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
   // ignored, leaving `payments` stuck missing whichever one raced it.
   const fetchingRef = useRef(false);
   const refetchPendingRef = useRef(false);
+  // Sync passes must run ONE AT A TIME. Each pass is a series of awaited
+  // writes and only updates lastSyncedRef at the very end; if the user
+  // makes a second edit while the first pass is still writing, a second
+  // pass used to start concurrently, diff against the STALE lastSyncedRef,
+  // and re-insert rows the first pass had already inserted (duplicate-key
+  // errors + a bogus "Couldn't save" alert). Chaining them fixes that.
+  const syncChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const fetchAll = useCallback(async () => {
     if (fetchingRef.current) {
@@ -116,15 +124,20 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Wipes the log in Supabase and starts a fresh 24h window from now.
-  const resetNow = useCallback(() => {
-    (async () => {
+  const resetNow = useCallback((): Promise<void> => {
+    persistAnchor(Date.now());
+    return (async () => {
       const { error } = await supabase.from('payments').delete().not('id', 'is', null);
       if (error) {
         console.warn('Failed to clear payment history', error);
       }
     })();
-    persistAnchor(Date.now());
   }, [persistAnchor]);
+
+  // See PlayersContext: don't refetch mid-write; wait for the sync pass.
+  const onRemoteChange = useCallback(() => {
+    syncChainRef.current.then(() => fetchAll());
+  }, [fetchAll]);
 
   useEffect(() => {
     (async () => {
@@ -134,7 +147,9 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
         const elapsed = Date.now() - anchor;
 
         if (elapsed >= RESET_INTERVAL_MS) {
-          resetNow();
+          // Await the wipe: fetching right after a fire-and-forget delete
+          // could return the old rows and show a "cleared" log as full.
+          await resetNow();
         } else {
           resetAnchorRef.current = anchor;
           if (!rawAnchor) await AsyncStorage.setItem(RESET_ANCHOR_KEY, String(anchor));
@@ -148,12 +163,12 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
 
     const channel = supabase
       .channel('payments-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, onRemoteChange)
       .subscribe();
 
     // Same gap as BookingContext had — see its comment for why.
     const appStateSub = AppState.addEventListener('change', (next: AppStateStatus) => {
-      if (next === 'active') fetchAll();
+      if (next === 'active') onRemoteChange();
     });
 
     return () => {
@@ -182,7 +197,7 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    (async () => {
+    syncChainRef.current = syncChainRef.current.then(async () => {
       const prev = lastSyncedRef.current;
       const prevById = new Map(prev.map((p) => [p.id, p]));
       const nextById = new Map(payments.map((p) => [p.id, p]));
@@ -262,7 +277,7 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
       }
 
       lastSyncedRef.current = payments;
-    })();
+    }).catch((e) => console.warn('Payment sync pass failed', e));
   }, [payments, loading, fetchAll]);
 
   const addPayment = useCallback((payment: NewPayment) => {
@@ -289,7 +304,7 @@ export function PaymentLogProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearHistory = useCallback(() => {
-    resetNow();
+    void resetNow();
     setPayments([]);
   }, [resetNow]);
 

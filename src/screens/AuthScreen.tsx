@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  ImageBackground,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,6 +11,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { AppColors } from '../colors';
 import { useAuth } from '../context/AuthContext';
@@ -19,6 +21,10 @@ type Mode = 'signIn' | 'signUp';
 
 export default function AuthScreen() {
   const { signIn, signUp, claimOwnerRole } = useAuth();
+  // Wide screens (laptop / landscape) get the landscape background; tall
+  // screens (phone in portrait) keep the original portrait one.
+  const { width, height } = useWindowDimensions();
+  const isLandscape = width > height;
   const [mode, setMode] = useState<Mode>('signIn');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -65,114 +71,126 @@ export default function AuthScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
+    <ImageBackground
+      source={
+        isLandscape
+          ? require('../../assets/login_bg_landscape.jpg')
+          : require('../../assets/login_bg.jpg')
+      }
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      resizeMode="cover"
     >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Image source={{ uri: MT_PICKLE_LOGO_BASE64 }} style={styles.logo} resizeMode="contain" />
-        <Text style={styles.title}>Mt Pickle Park</Text>
-        <Text style={styles.subtitle}>
-          {mode === 'signIn' ? 'Sign in to your account' : 'Create an account'}
-        </Text>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <Image source={{ uri: MT_PICKLE_LOGO_BASE64 }} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>Mt Pickle Park</Text>
+          <Text style={styles.subtitle}>
+            {mode === 'signIn' ? 'Sign in to your account' : 'Create an account'}
+          </Text>
 
-        <View style={styles.card}>
-          {mode === 'signUp' && (
-            <>
-              <Text style={styles.label}>Your name</Text>
-              <TextInput
-                style={styles.input}
-                value={displayName}
-                onChangeText={setDisplayName}
-                placeholder="e.g. Juan"
-              />
-            </>
-          )}
+          <View style={styles.card}>
+            {mode === 'signUp' && (
+              <>
+                <Text style={styles.label}>Your name</Text>
+                <TextInput
+                  style={styles.input}
+                  value={displayName}
+                  onChangeText={setDisplayName}
+                  placeholder="e.g. Juan"
+                />
+              </>
+            )}
 
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="you@example.com"
-            autoCapitalize="none"
-            keyboardType="email-address"
-          />
-
-          <Text style={styles.label}>Password</Text>
-          <View style={styles.passwordRow} collapsable={false}>
+            <Text style={styles.label}>Email</Text>
             <TextInput
-              style={[styles.input, styles.passwordInput]}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="At least 6 characters"
-              secureTextEntry={!showPassword}
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              placeholder="you@example.com"
               autoCapitalize="none"
-              autoComplete="off"
+              keyboardType="email-address"
             />
-            <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.showPasswordBtn}>
-              <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
+
+            <Text style={styles.label}>Password</Text>
+            <View style={styles.passwordRow} collapsable={false}>
+              <TextInput
+                style={[styles.input, styles.passwordInput]}
+                value={password}
+                onChangeText={setPassword}
+                placeholder="At least 6 characters"
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoComplete="off"
+              />
+              <Pressable onPress={() => setShowPassword((v) => !v)} style={styles.showPasswordBtn}>
+                <Text style={styles.showPasswordText}>{showPassword ? 'Hide' : 'Show'}</Text>
+              </Pressable>
+            </View>
+
+            {mode === 'signUp' && (
+              <>
+                <Pressable onPress={() => setShowOwnerPin((v) => !v)} style={styles.ownerToggle}>
+                  <Text style={styles.ownerToggleText}>
+                    {showOwnerPin ? '▾' : '▸'} I'm the owner (have a PIN)
+                  </Text>
+                </Pressable>
+                {showOwnerPin && (
+                  <View style={styles.passwordRow} collapsable={false}>
+                    <TextInput
+                      style={[styles.input, styles.passwordInput]}
+                      value={ownerPin}
+                      onChangeText={setOwnerPin}
+                      placeholder="Owner PIN"
+                      secureTextEntry={!pinVisible}
+                      autoComplete="off"
+                    />
+                    <Pressable onPress={() => setPinVisible((v) => !v)} style={styles.showPasswordBtn}>
+                      <Text style={styles.showPasswordText}>{pinVisible ? 'Hide' : 'Show'}</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </>
+            )}
+
+            {error && <Text style={styles.error}>{error}</Text>}
+
+            <Pressable
+              onPress={handleSubmit}
+              disabled={submitting}
+              style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.submitText}>{mode === 'signIn' ? 'Sign In' : 'Sign Up'}</Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              onPress={() => {
+                setMode(mode === 'signIn' ? 'signUp' : 'signIn');
+                setError(null);
+              }}
+              style={styles.switchBtn}
+            >
+              <Text style={styles.switchText}>
+                {mode === 'signIn' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+              </Text>
             </Pressable>
           </View>
-
-          {mode === 'signUp' && (
-            <>
-              <Pressable onPress={() => setShowOwnerPin((v) => !v)} style={styles.ownerToggle}>
-                <Text style={styles.ownerToggleText}>
-                  {showOwnerPin ? '▾' : '▸'} I'm the owner (have a PIN)
-                </Text>
-              </Pressable>
-              {showOwnerPin && (
-                <View style={styles.passwordRow} collapsable={false}>
-                  <TextInput
-                    style={[styles.input, styles.passwordInput]}
-                    value={ownerPin}
-                    onChangeText={setOwnerPin}
-                    placeholder="Owner PIN"
-                    secureTextEntry={!pinVisible}
-                    autoComplete="off"
-                  />
-                  <Pressable onPress={() => setPinVisible((v) => !v)} style={styles.showPasswordBtn}>
-                    <Text style={styles.showPasswordText}>{pinVisible ? 'Hide' : 'Show'}</Text>
-                  </Pressable>
-                </View>
-              )}
-            </>
-          )}
-
-          {error && <Text style={styles.error}>{error}</Text>}
-
-          <Pressable
-            onPress={handleSubmit}
-            disabled={submitting}
-            style={[styles.submitBtn, submitting && { opacity: 0.6 }]}
-          >
-            {submitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.submitText}>{mode === 'signIn' ? 'Sign In' : 'Sign Up'}</Text>
-            )}
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              setMode(mode === 'signIn' ? 'signUp' : 'signIn');
-              setError(null);
-            }}
-            style={styles.switchBtn}
-          >
-            <Text style={styles.switchText}>
-              {mode === 'signIn' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
-            </Text>
-          </Pressable>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  // forestGreen shows only for the instant before the background image loads.
   flex: { flex: 1, backgroundColor: AppColors.forestGreen },
+  keyboardAvoid: { flex: 1 },
   container: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   logo: { width: 88, height: 88, marginBottom: 12, borderRadius: 16 },
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff', marginBottom: 4 },

@@ -28,9 +28,8 @@ export default function MyBillScreen({
 }: {
   onBack?: () => void;
   // Called when the player wants to start a new session/order after their
-  // previous one was cleared by the owner. Sends them back to
-  // JoinSessionScreen. Optional so this component doesn't break if some
-  // other caller doesn't wire it up.
+  // previous one was cleared by the owner. Optional; the button is
+  // hidden when no caller wires it up.
   onRejoin?: () => void;
 }) {
   const { signOut, session } = useAuth();
@@ -55,6 +54,12 @@ export default function MyBillScreen({
         .from('players')
         .select('id, name, court_fee, court_fee_paid, order_items(id, name, price, quantity, is_paid)')
         .eq('linked_user_id', session.user.id)
+        // A player can end up linked to more than one row (e.g. re-added
+        // after a clear). maybeSingle() ERRORS on 2+ rows, which showed
+        // "No active session" for someone who very much has one. Take
+        // the most recently created row instead.
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (error) {
         console.warn('Failed to load your bill', error);

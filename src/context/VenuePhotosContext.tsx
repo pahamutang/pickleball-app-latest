@@ -94,6 +94,18 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
   // leaves `photos` stuck missing one of them.
   const fetchingRef = useRef(false);
   const refetchPendingRef = useRef(false);
+  // Always-current copy of `photos`, so addPhoto computes its position from
+  // the latest list rather than whatever `photos` was when this render's
+  // closure was created (a photo added a moment ago, or a realtime update,
+  // would otherwise be missed and two adds could pick the same position ->
+  // unique-constraint failure).
+  const photosRef = useRef<VenuePhoto[]>([]);
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+  // Blocks a second upload starting while one is in flight (double tap on
+  // "Add photo" / a slot's replace button).
+  const busyRef = useRef(false);
 
   const fetchAll = async () => {
     if (fetchingRef.current) {
@@ -148,6 +160,8 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
   // Adds an extra photo after the 5 base slides — never touches or
   // reorders any existing slide, base or extra.
   const addPhoto = async (base64: string, sourceUri: string): Promise<MutationResult> => {
+    if (busyRef.current) return { ok: false, error: 'Another photo is still uploading. Please wait.' };
+    busyRef.current = true;
     setUploading(true);
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -155,7 +169,7 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
       if (!userId) return { ok: false, error: 'You need to be signed in to do that.' };
 
       const { path, url } = await uploadVenuePhotoFile(base64, sourceUri);
-      const position = nextExtraPosition(photos);
+      const position = nextExtraPosition(photosRef.current);
 
       const { data, error } = await supabase
         .from('venue_photos')
@@ -182,6 +196,7 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
       console.warn('Failed to upload venue photo', error);
       return { ok: false, error: describeError(error) };
     } finally {
+      busyRef.current = false;
       setUploading(false);
     }
   };
@@ -215,6 +230,8 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
     base64: string,
     sourceUri: string
   ): Promise<MutationResult> => {
+    if (busyRef.current) return { ok: false, error: 'Another photo is still uploading. Please wait.' };
+    busyRef.current = true;
     setSavingSlot(position);
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -268,6 +285,7 @@ export function VenuePhotosProvider({ children }: { children: ReactNode }) {
       console.warn('Failed to upload venue photo', error);
       return { ok: false, error: describeError(error) };
     } finally {
+      busyRef.current = false;
       setSavingSlot(null);
     }
   };

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -67,7 +67,7 @@ const VENUE_LOCATION = {
   placeId: 'ChIJ4RbZHxsXqjMRPRpPUV8lpxg',
 };
 
-type CellStatus = 'past' | 'booked' | 'pending' | 'selected' | 'available';
+type CellStatus = 'soon' | 'past' | 'booked' | 'pending' | 'selected' | 'available';
 
 // `onOpenLegacy` only ever gets passed (and only ever gets rendered) from
 // the owner's app shell — a player's account never receives it, so
@@ -174,6 +174,7 @@ export default function BookingScreen({
   }, [selectedDate, changeVersion, getBookedSlots]);
 
   const cellStatus = (court: Court, hour: number): CellStatus => {
+    if (court.comingSoon) return 'soon';
     if (isPastSlot(selectedDate, hour)) return 'past';
     const match = bookedSlots.find((s) => s.court === court.name && s.hour === hour);
     if (match) return match.isPaid ? 'booked' : 'pending';
@@ -183,7 +184,7 @@ export default function BookingScreen({
 
   const handleCellPress = (court: Court, hour: number) => {
     const status = cellStatus(court, hour);
-    if (status === 'past' || status === 'booked' || status === 'pending') return;
+    if (status === 'soon' || status === 'past' || status === 'booked' || status === 'pending') return;
 
     // Toggle this hour within *this court's own* selection only — every
     // other court's selection is left untouched, so a player can select
@@ -245,8 +246,28 @@ export default function BookingScreen({
   } | null>(null);
   const [confirmedReservations, setConfirmedReservations] = useState<Reservation[] | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Synchronous re-entrancy guard for handleReserve. `submitting` (state)
+  // is only set AFTER the first `await getBookedSlots(...)` below, and
+  // state updates aren't visible to a second tap that lands in the same
+  // tick anyway — so two fast taps on Reserve both used to get past the
+  // check and both ran the full insert/merge flow (double booking, or a
+  // confusing "slot was just booked" error against your own booking). A
+  // ref flips immediately, so the second tap is dropped.
+  const reserveInFlightRef = useRef(false);
 
   const handleReserve = async () => {
+    if (reserveInFlightRef.current) return;
+    reserveInFlightRef.current = true;
+    setSubmitting(true);
+    try {
+      await runReserve();
+    } finally {
+      reserveInFlightRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const runReserve = async () => {
     const trimmedName = customerName.trim();
     if (!trimmedName) {
       setAlertState({
@@ -372,8 +393,6 @@ export default function BookingScreen({
       }
     }
 
-    setSubmitting(true);
-
     const succeededMerges: PlannedMerge[] = [];
     const succeededInserts: Reservation[] = [];
     let failure: string | undefined;
@@ -414,7 +433,6 @@ export default function BookingScreen({
         ),
         ...succeededInserts.map((r) => cancelReservation(r.id)),
       ]);
-      setSubmitting(false);
       setAlertState({
         variant: 'error',
         title: "Couldn't save reservation",
@@ -423,7 +441,6 @@ export default function BookingScreen({
       return;
     }
 
-    setSubmitting(false);
     resetForm();
     // Confirmation shows every court this action touched — for a merged
     // court, that's its full updated hour list (old + new), not just the
@@ -699,7 +716,13 @@ export default function BookingScreen({
                 ]}
               >
                 <Text style={styles.courtHeaderName}>{c.name}</Text>
-                <Text style={styles.courtHeaderType}>{c.type}</Text>
+                {c.comingSoon ? (
+                  <View style={styles.comingSoonBadge}>
+                    <Text style={styles.comingSoonBadgeText}>COMING SOON</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.courtHeaderType}>{c.type}</Text>
+                )}
               </View>
             ))}
           </View>
@@ -721,7 +744,7 @@ export default function BookingScreen({
                         <Pressable
                           key={court.name}
                           onPress={() => handleCellPress(court, slot.hour)}
-                          disabled={status === 'past' || status === 'booked' || status === 'pending'}
+                          disabled={status === 'soon' || status === 'past' || status === 'booked' || status === 'pending'}
                           style={[styles.cell, cellStyleFor(status)]}
                           accessibilityRole="button"
                           accessibilityLabel={`${court.name}, ${slot.label}, ${status}`}
@@ -964,6 +987,8 @@ function formatHourRange(startHour: number, endHour: number): string {
 
 function cellLabelFor(status: CellStatus): string {
   switch (status) {
+    case 'soon':
+      return 'Soon';
     case 'booked':
       return 'Booked';
     case 'pending':
@@ -979,6 +1004,8 @@ function cellLabelFor(status: CellStatus): string {
 
 function cellStyleFor(status: CellStatus) {
   switch (status) {
+    case 'soon':
+      return styles.cellSoon;
     case 'booked':
       return styles.cellBooked;
     case 'pending':
@@ -994,6 +1021,8 @@ function cellStyleFor(status: CellStatus) {
 
 function cellTextStyleFor(status: CellStatus) {
   switch (status) {
+    case 'soon':
+      return styles.cellTextSoon;
     case 'booked':
       return styles.cellTextBooked;
     case 'pending':
@@ -1170,6 +1199,16 @@ const styles = StyleSheet.create({
   cellBooked: { backgroundColor: '#D8D8D8' },
   cellTextBooked: { fontSize: 9, color: '#777', fontWeight: '600' },
   cellPast: { backgroundColor: '#F0F0F0' },
+  cellSoon: { backgroundColor: '#F3F1EA', borderWidth: 1, borderColor: '#E4E0D2', borderStyle: 'dashed' },
+  cellTextSoon: { fontSize: 9, fontWeight: '700', color: '#B5AE99' },
+  comingSoonBadge: {
+    marginTop: 2,
+    backgroundColor: AppColors.gold,
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  comingSoonBadgeText: { fontSize: 8, fontWeight: '800', color: AppColors.forestGreen, letterSpacing: 0.3 },
   cellTextPast: { fontSize: 10, color: '#ccc' },
 
   legendRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginHorizontal: 16, marginTop: 12 },
